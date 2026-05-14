@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "154792131379",
+    "project_id": "vaultx-ad8bd",
+    "storage_bucket": "vaultx-ad8bd.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:154792131379:android:d0f5f725ff7295d73e9c46",
+        "android_client_info": {
+          "package_name": "com.vaultx.secure"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAuAjyQscdov4kb5CcpJgqbpIo7Uqqelzw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
