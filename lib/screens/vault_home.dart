@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import '../models/models.dart';
 import '../services/services.dart';
 import '../widgets/widgets.dart';
+import '../widgets/note_views_renderer.dart';
 import 'archive_screen.dart';
 import 'drive_screen.dart';
 import 'login_screen.dart';
@@ -15,6 +16,7 @@ import 'note_editor.dart';
 import 'settings_screen.dart';
 import 'decoy_calculator_screen.dart';
 import 'game_screen.dart';
+import 'graph_view_screen.dart';
 
 const _kPageSize = 50;
 
@@ -43,7 +45,6 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
   DateTime? _backgroundedAt;
   Map<String, dynamic> _posture = {};
   List<SecureNote> _filteredNotes = [];
-  List<SearchMatch>? _searchMatches;
   int _searchGeneration = 0;
   final _visibleCount = ValueNotifier<int>(_kPageSize);
   int _archivedCount = 0;
@@ -54,6 +55,10 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
   Timer? _lockHoldTimer;
   double _lockHoldProgress = 0.0;
   late PageController _pageController;
+
+  late NoteViewMode _viewMode;
+
+  final Set<String> _selectedIds = {};
 
   final _searchService = SearchService();
   SearchFilters _searchFilters = const SearchFilters();
@@ -66,6 +71,8 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    final savedMode = Hive.box('vaultx_settings').get('viewMode', defaultValue: 'grid') as String;
+    _viewMode = NoteViewMode.values.firstWhere((e) => e.name == savedMode, orElse: () => NoteViewMode.grid);
     _pageController = PageController(initialPage: _index);
     WidgetsBinding.instance.addObserver(this);
     widget.auth.isHiddenVaultConfigured().then((v) {
@@ -114,6 +121,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    SmartOcrScanner.stop();
     _lockTimer?.cancel();
     _lockHoldTimer?.cancel();
     _searchService.dispose();
@@ -144,8 +152,10 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
   }
 
   Future<void> _load() async {
+    debugPrint('[VaultHome] Starting _load()');
     if (widget.authResult.kind == VaultKind.decoy) {
       final notes = await DecoySeedService.loadNotes();
+      debugPrint('[VaultHome] Loaded ${notes.length} decoy notes');
       if (mounted) {
         setState(() {
           _notes = notes;
@@ -161,6 +171,8 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
     }
     final notes = await _repo!.loadNotes();
     final metadata = await _repo!.loadFolderMetadata();
+    debugPrint('[VaultHome] Loaded ${notes.length} notes from repo');
+    
     if (mounted) {
       setState(() {
         _notes = notes;
@@ -176,6 +188,11 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
         });
       }
       _runSearch();
+      
+      // Start background OCR processing for images
+      if (_blobs != null) {
+        SmartOcrScanner.start(_repo!, _blobs!);
+      }
     }
   }
 
@@ -197,6 +214,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
       _notes.where((n) => !n.archived).toList();
 
   Future<void> _runSearch() async {
+    debugPrint('[VaultHome] _runSearch() - total notes: ${_notes.length}');
     if (_notes.isEmpty) {
       if (mounted) setState(() => _filteredNotes = []);
       return;
@@ -209,6 +227,8 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
     }
 
     final source = _activeNotes.where((n) => isFolderAccessible(n.folder)).toList();
+    debugPrint('[VaultHome] _runSearch() - active & accessible source: ${source.length}');
+    
     final query = _query;
     final folder = _folder;
     final filters = _searchFilters.copyWith(
@@ -228,10 +248,10 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
         filters.category == null;
 
     if (noFilters) {
+      debugPrint('[VaultHome] _runSearch() - no filters, showing all ${source.length} notes');
       if (mounted) {
         setState(() {
           _filteredNotes = source;
-          _searchMatches = null;
           _visibleCount.value = _kPageSize;
         });
       }
@@ -239,13 +259,88 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
     }
 
     final results = await _searchService.searchAsync(source, filters);
+    debugPrint('[VaultHome] _runSearch() - search results: ${results.length}');
+    
     if (mounted && gen == _searchGeneration) {
       setState(() {
-        _searchMatches = results;
         _filteredNotes = results.map((m) => m.note).toList();
         _visibleCount.value = _kPageSize;
       });
     }
+  }
+
+  void _onSelectionToggle(SecureNote note) {
+    setState(() {
+      if (_selectedIds.contains(note.id)) {
+        _selectedIds.remove(note.id);
+      } else {
+        _selectedIds.add(note.id);
+      }
+    });
+  }
+
+  void _selectBatch(int count) {
+    setState(() {
+      final toSelect = _filteredNotes.take(count);
+      for (final n in toSelect) {
+        _selectedIds.add(n.id);
+      }
+    });
+  }
+
+  void _selectAll() {
+    setState(() {
+      for (final n in _filteredNotes) {
+        _selectedIds.add(n.id);
+      }
+    });
+  }
+
+  void _deselectAll() {
+    setState(() {
+      _selectedIds.clear();
+    });
+  }
+
+  Future<void> _bulkAction(String action) async {
+    final selectedNotes = _notes.where((n) => _selectedIds.contains(n.id)).toList();
+    if (selectedNotes.isEmpty) return;
+
+    final ok = await _authenticateForAction('Bulk $action');
+    if (!ok) return;
+
+    switch (action) {
+      case 'delete':
+        for (final n in selectedNotes) {
+          if (widget.authResult.kind == VaultKind.decoy) {
+            await DecoySeedService.deleteNote(n.id);
+          } else {
+            await _repo!.delete(n.id);
+          }
+        }
+        FloatingNotificationService.instance.show('${selectedNotes.length} notes deleted');
+        break;
+      case 'archive':
+        for (final n in selectedNotes) {
+          if (widget.authResult.kind != VaultKind.decoy) {
+            await _repo!.save(n.copyWith(archived: true));
+          }
+        }
+        FloatingNotificationService.instance.show('${selectedNotes.length} notes archived');
+        break;
+      case 'favorite':
+        for (final n in selectedNotes) {
+          if (widget.authResult.kind == VaultKind.decoy) {
+            await DecoySeedService.saveNote(n.copyWith(favorite: true));
+          } else {
+            await _repo!.save(n.copyWith(favorite: true));
+          }
+        }
+        break;
+    }
+
+    _deselectAll();
+    await _load();
   }
 
   Future<bool> _unlockFolder(String folderName) async {
@@ -553,35 +648,106 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
     }
   }
 
-  SearchMatch? _matchFor(SecureNote note) {
-    if (_query.isEmpty || _searchMatches == null) return null;
-    for (final m in _searchMatches!) {
-      if (m.note.id == note.id) return m;
+  Future<void> _saveNote(SecureNote edited, SecureNote? original) async {
+    final isDecoy = widget.authResult.kind == VaultKind.decoy;
+    
+    // Only create a new version if the content actually changed and it's not a brand new note
+    List<Map<String, dynamic>> versions = edited.versions;
+    if (original != null && !isDecoy) {
+      final changed = edited.title != original.title || edited.body != original.body;
+      if (changed) {
+        // To avoid flooding versions with auto-saves, we only add a new version 
+        // if the last version is older than 5 minutes or if this is the final save.
+        bool shouldAddVersion = true;
+        if (original.versions.isNotEmpty) {
+          final lastVer = original.versions.last;
+          final lastAt = DateTime.tryParse(lastVer['updatedAt'] as String? ?? '');
+          if (lastAt != null && DateTime.now().difference(lastAt).inMinutes < 5) {
+            shouldAddVersion = false;
+          }
+        }
+
+        if (shouldAddVersion) {
+          versions = [
+            ...original.versions,
+            {...original.toJson(), 'updatedAt': DateTime.now().toIso8601String()},
+          ].take(20).toList();
+        }
+      }
     }
-    return null;
+
+    if (isDecoy) {
+      await DecoySeedService.saveNote(edited.copyWith(versions: versions));
+    } else {
+      await _repo!.save(edited.copyWith(versions: versions));
+    }
   }
 
   Future<void> _openEditor([SecureNote? note]) async {
-    final edited = await Navigator.of(context).push<SecureNote>(
+    await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => NoteEditor(note: note, blobs: _blobs),
+        builder: (_) => NoteEditor(
+          note: note,
+          blobs: _blobs,
+          onAutoSave: (edited) => _saveNote(edited, note),
+        ),
       ),
     );
-    if (edited != null && mounted) {
-      final isDecoy = widget.authResult.kind == VaultKind.decoy;
-      final versions = note == null || isDecoy
-          ? edited.versions
-          : [
-              ...note.versions,
-              {...note.toJson(), 'updatedAt': DateTime.now().toIso8601String()},
-            ].take(20).toList();
-      if (isDecoy) {
-        await DecoySeedService.saveNote(edited.copyWith(versions: versions));
-      } else {
-        await _repo!.save(edited.copyWith(versions: versions));
-      }
-      await _load();
+    if (mounted) await _load();
+  }
+
+  Future<bool> _authenticateForAction(String title) async {
+    final bioEnabled = await widget.auth.isBiometricUnlockAvailable();
+    if (bioEnabled) {
+      final ok = await widget.auth.authenticateBiometric();
+      if (ok) return true;
     }
+
+    if (!mounted) return false;
+
+    // Fallback to password/PIN
+    final ctrl = TextEditingController();
+    final secret = await showDialog<String>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: ctrl,
+          obscureText: true,
+          autofocus: true,
+          decoration: InputDecoration(
+            labelText: widget.authResult.kind == VaultKind.hidden
+                ? 'Hidden vault password'
+                : 'Master password',
+          ),
+          onSubmitted: (val) => Navigator.of(dialogCtx).pop(val),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(ctrl.text),
+            child: const Text('Verify'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+
+    if (secret == null || secret.isEmpty) return false;
+
+    if (widget.authResult.kind == VaultKind.decoy) {
+      // In decoy mode, we check against decoy password
+      return await widget.auth.verifyDecoyPassword(secret);
+    }
+
+    final result = widget.authResult.kind == VaultKind.hidden
+        ? await widget.auth.unlockHidden(secret)
+        : await widget.auth.unlockWithPassword(secret);
+
+    return result.ok && result.kind == widget.authResult.kind;
   }
 
   void _onPageChanged(int index) {
@@ -599,11 +765,16 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final folders = _cachedFolders;
+    final isSelectionMode = _selectedIds.isNotEmpty;
 
     return PopScope(
-      canPop: _index == 0,
+      canPop: _index == 0 && !isSelectionMode,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
+        if (isSelectionMode) {
+          _deselectAll();
+          return;
+        }
         if (_index != 0) {
           _onDestinationSelected(0);
         }
@@ -613,81 +784,120 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
         onPanDown: (_) => _resetLockTimer(),
         child: Scaffold(
           appBar: AppBar(
-              title: _VaultSwitcher(
-                currentKind: widget.authResult.kind,
-                hasHidden: _hasHiddenVault,
-                onSwitch: _switchVault,
-              ),
+              leading: isSelectionMode 
+                  ? IconButton(onPressed: _deselectAll, icon: const Icon(Icons.close))
+                  : null,
+              title: isSelectionMode 
+                  ? Text('${_selectedIds.length} selected')
+                  : _VaultSwitcher(
+                      currentKind: widget.authResult.kind,
+                      hasHidden: _hasHiddenVault,
+                      onSwitch: _switchVault,
+                    ),
               actions: [
-                Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: GestureDetector(
-                    onTap: _lockNow,
-                    onLongPressStart: (_) => _startLockHold(),
-                    onLongPressEnd: (_) => _cancelLockHold(),
-                    onLongPressCancel: () => _cancelLockHold(),
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        if (_isHoldingLock)
-                          SizedBox(
-                            width: 42,
-                            height: 42,
-                            child: CircularProgressIndicator(
-                              value: _lockHoldProgress,
-                              strokeWidth: 3,
-                              color: Theme.of(context).colorScheme.error,
-                              backgroundColor: Theme.of(context).colorScheme.error.withValues(alpha: 0.1),
+                if (isSelectionMode) ...[
+                  IconButton(onPressed: () => _bulkAction('favorite'), icon: const Icon(Icons.star_outline)),
+                  IconButton(onPressed: () => _bulkAction('archive'), icon: const Icon(Icons.archive_outlined)),
+                  IconButton(onPressed: () => _bulkAction('delete'), icon: const Icon(Icons.delete_outline)),
+                  PopupMenuButton<String>(
+                    onSelected: (v) {
+                      if (v == 'select_50') _selectBatch(50);
+                      if (v == 'select_next_50') _selectBatch(_selectedIds.length + 50);
+                      if (v == 'select_100') _selectBatch(100);
+                      if (v == 'select_all') _selectAll();
+                    },
+                    itemBuilder: (ctx) => [
+                      const PopupMenuItem(value: 'select_50', child: Text('Select 50')),
+                      const PopupMenuItem(value: 'select_next_50', child: Text('Select next 50')),
+                      const PopupMenuItem(value: 'select_100', child: Text('Select 100')),
+                      const PopupMenuItem(value: 'select_all', child: Text('Select all')),
+                    ],
+                  ),
+                ] else ...[
+                  IconButton(
+                    onPressed: _load,
+                    icon: const Icon(Icons.refresh),
+                    tooltip: 'Refresh all notes',
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: GestureDetector(
+                      onTap: _lockNow,
+                      onLongPressStart: (_) => _startLockHold(),
+                      onLongPressEnd: (_) => _cancelLockHold(),
+                      onLongPressCancel: () => _cancelLockHold(),
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          if (_isHoldingLock)
+                            SizedBox(
+                              width: 42,
+                              height: 42,
+                              child: CircularProgressIndicator(
+                                value: _lockHoldProgress,
+                                strokeWidth: 3,
+                                color: Theme.of(context).colorScheme.error,
+                                backgroundColor: Theme.of(context).colorScheme.error.withValues(alpha: 0.1),
+                              ),
+                            ),
+                          Container(
+                            width: 48,
+                            height: 48,
+                            decoration: BoxDecoration(
+                              color: _isHoldingLock 
+                                  ? Theme.of(context).colorScheme.errorContainer.withValues(alpha: 0.2)
+                                  : Colors.transparent,
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(
+                              Icons.emergency_share,
+                              color: _isHoldingLock 
+                                  ? Theme.of(context).colorScheme.error 
+                                  : Theme.of(context).colorScheme.onSurface,
                             ),
                           ),
-                        Container(
-                          width: 48,
-                          height: 48,
-                          decoration: BoxDecoration(
-                            color: _isHoldingLock 
-                                ? Theme.of(context).colorScheme.errorContainer.withValues(alpha: 0.2)
-                                : Colors.transparent,
-                            shape: BoxShape.circle,
-                          ),
-                          child: Icon(
-                            Icons.emergency_share,
-                            color: _isHoldingLock 
-                                ? Theme.of(context).colorScheme.error 
-                                : Theme.of(context).colorScheme.onSurface,
-                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            body: Column(
+              children: [
+                if (isSelectionMode && _selectedIds.length < _filteredNotes.length)
+                  _buildGmailSelectionBanner(),
+                Expanded(
+                  child: RepaintBoundary(
+                    child: PageView(
+                      controller: _pageController,
+                      onPageChanged: _onPageChanged,
+                      physics: isSelectionMode ? const NeverScrollableScrollPhysics() : null,
+                      children: [
+                        _NotesTabWrapper(child: _buildNotesTab(folders)),
+                        DriveScreen(
+                          auth: widget.auth,
+                          drive: _drive,
+                          passwordVault: _passwordVault,
+                          itemActions: _itemActions,
+                          isDecoy: widget.authResult.kind == VaultKind.decoy,
                         ),
+                        SettingsScreen(
+                          auth: widget.auth,
+                          repo: widget.authResult.kind == VaultKind.decoy ? null : _repo,
+                          posture: _posture,
+                          onDataChanged: _load,
+                          vaultKind: widget.authResult.kind,
+                          onSwitchVault: _switchVault,
+                        ),
+                        const VaultXGameScreen(),
                       ],
                     ),
                   ),
                 ),
               ],
             ),
-            body: RepaintBoundary(
-              child: PageView(
-              controller: _pageController,
-              onPageChanged: _onPageChanged,
-              children: [
-                _NotesTabWrapper(child: _buildNotesTab(folders)),
-                DriveScreen(
-                  auth: widget.auth,
-                  drive: _drive,
-                  passwordVault: _passwordVault,
-                  itemActions: _itemActions,
-                  isDecoy: widget.authResult.kind == VaultKind.decoy,
-                ),
-                SettingsScreen(
-                  auth: widget.auth,
-                  repo: widget.authResult.kind == VaultKind.decoy ? null : _repo,
-                  posture: _posture,
-                  onDataChanged: _load,
-                  vaultKind: widget.authResult.kind,
-                  onSwitchVault: _switchVault,
-                ),
-                const VaultXGameScreen(),
-              ],
-            ),
-            ),
-            floatingActionButton: _index == 0
+            floatingActionButton: (_index == 0 && !isSelectionMode)
                 ? FloatingActionButton.extended(
                     heroTag: 'mainVaultFab',
                     onPressed: () async {
@@ -745,17 +955,52 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
-          child: SmartSearchBar(
-            onChanged: (v) {
-              _searchService.cancelDebounce();
-              _searchService.debouncedSearch(v, () {
-                if (mounted) {
-                  setState(() => _query = v);
-                  _runSearch();
-                }
-              });
-            },
-            suggestions: _searchSuggestions,
+          child: Row(
+            children: [
+              Expanded(
+                child: SmartSearchBar(
+                  onChanged: (v) {
+                    _searchService.cancelDebounce();
+                    _searchService.debouncedSearch(v, () {
+                      if (mounted) {
+                        setState(() => _query = v);
+                        _runSearch();
+                      }
+                    });
+                  },
+                  suggestions: _searchSuggestions,
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton.filledTonal(
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => GraphViewScreen(notes: _notes, blobs: _blobs),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.hub_outlined),
+                tooltip: 'Knowledge Graph',
+              ),
+              const SizedBox(width: 8),
+              IconButton.filledTonal(
+                onPressed: () {
+                  showModalBottomSheet(
+                    context: context,
+                    builder: (_) => ViewSwitcherSheet(
+                      currentMode: _viewMode,
+                      onModeSelected: (mode) {
+                        setState(() => _viewMode = mode);
+                        Hive.box('vaultx_settings').put('viewMode', mode.name);
+                      },
+                    ),
+                  );
+                },
+                icon: Icon(noteViewIcons[_viewMode]),
+                tooltip: 'Change view layout',
+              ),
+            ],
           ),
         ),
         SearchFiltersBar(
@@ -904,122 +1149,131 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
           ),
         ),
         Expanded(
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 240),
-            child: filtered.isEmpty
-                ? EmptyState(
-                    icon: Icons.note_add_outlined,
-                    title: 'No secure notes yet',
-                    body:
-                        'Create your first encrypted note, voice memo, checklist, or drawing.',
-                  )
-                : ValueListenableBuilder<int>(
-                    valueListenable: _visibleCount,
-                    builder: (context, visible, _) {
-                      final showCount = visible.clamp(0, filtered.length);
-                      final visibleNotes = filtered.take(showCount).toList();
-                      return Column(
-                        children: [
-                          Expanded(
-                            child: ListView.builder(
-                              key: ValueKey(_query),
-                              padding: const EdgeInsets.all(12),
-                              itemCount: visibleNotes.length,
-                              itemBuilder: (context, i) => NoteCard(
-                                    key: ValueKey(visibleNotes[i].id),
-                                      note: visibleNotes[i],
-                                      category:
-                                          _noteCategories[visibleNotes[i].id],
-                                      relevanceScore: _query.isNotEmpty
-                                          ? _matchFor(visibleNotes[i])?.score
-                                          : null,
-                                      onTap: () async {
-                                        final note = visibleNotes[i];
-                                        await _openEditor(note);
-                                        if (note.oneTimeView) {
-                                          if (widget.authResult.kind ==
-                                              VaultKind.decoy) {
-                                            await DecoySeedService.deleteNote(
-                                              note.id,
-                                            );
-                                          } else {
-                                            await _repo!.delete(note.id);
-                                          }
-                                        }
-                                      },
-                                      onDelete: () async {
-                                        if (widget.authResult.kind == VaultKind.decoy) {
-                                          await DecoySeedService.deleteNote(visibleNotes[i].id);
-                                        } else {
-                                          await _itemActions?.deleteNote(context, visibleNotes[i]);
-                                        }
-                                        await _load();
-                                      },
-                                      onToggleArchive: () async {
-                                        if (widget.authResult.kind == VaultKind.decoy) return;
-                                        await _itemActions?.archiveNote(context, visibleNotes[i]);
-                                        await _load();
-                                      },
-                                      onToggleFavorite: () async {
-                                        if (widget.authResult.kind ==
-                                            VaultKind.decoy) {
-                                          await DecoySeedService.saveNote(
-                                            visibleNotes[i].copyWith(
-                                              favorite:
-                                                  !visibleNotes[i].favorite,
-                                            ),
-                                          );
-                                        } else {
-                                          await _repo!.save(
-                                            visibleNotes[i].copyWith(
-                                              favorite:
-                                                  !visibleNotes[i].favorite,
-                                            ),
-                                          );
-                                        }
-                                        await _load();
-                                      },
-                                      onTogglePin: () async {
-                                        if (widget.authResult.kind == VaultKind.decoy) return;
-                                        await _itemActions?.pinNote(context, visibleNotes[i]);
-                                        await _load();
-                                      },
-                                      onShare: () async {
-                                        if (widget.authResult.kind == VaultKind.decoy) return;
-                                        await _itemActions?.shareNote(context, visibleNotes[i]);
-                                      },
-                                      onMove: () async {
-                                        if (widget.authResult.kind == VaultKind.decoy) return;
-                                        await _itemActions?.moveNote(context, visibleNotes[i]);
-                                        await _load();
-                                      },
-                                      onToggleBackup: () async {
-                                        if (widget.authResult.kind == VaultKind.decoy) return;
-                                        await _itemActions?.toggleNoteBackup(context, visibleNotes[i]);
-                                        await _load();
-                                      },
-                                    ),
-                                  ),
-                            ),
-                          if (showCount < filtered.length)
-                            Padding(
-                              padding: const EdgeInsets.all(8),
-                              child: TextButton(
-                                onPressed: () =>
-                                    _visibleCount.value = (visible + _kPageSize)
-                                        .clamp(0, filtered.length),
-                                child: Text(
-                                  'Load more (${filtered.length - showCount} remaining)',
-                                ),
-                              ),
-                            ),
-                        ],
-                      );
-                    },
-                  ),
-          ),
+          child: filtered.isEmpty
+              ? EmptyState(
+                  icon: Icons.note_add_outlined,
+                  title: 'No secure notes yet',
+                  body:
+                      'Create your first encrypted note, voice memo, checklist, or drawing.',
+                )
+              : ValueListenableBuilder<int>(
+                  valueListenable: _visibleCount,
+                  builder: (context, visible, _) {
+                    final showCount = visible.clamp(0, filtered.length);
+                    final visibleNotes = filtered.take(showCount).toList();
+
+                    return RefreshIndicator(
+                      onRefresh: _load,
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 200),
+                        child: NoteViewsRenderer(
+                          key: ValueKey('${_viewMode.name}_$_query'),
+                          mode: _viewMode,
+                          notes: visibleNotes,
+                          categories: _noteCategories,
+                          selectedIds: _selectedIds,
+                          onSelectionToggle: _onSelectionToggle,
+                          blobs: _blobs,
+                          hasMore: showCount < filtered.length,
+                          onLoadMore: () {
+                            _visibleCount.value = (visible + _kPageSize).clamp(0, filtered.length);
+                          },
+                          onTap: (note) async {
+                            if (note.locked) {
+                              final authenticated = await _authenticateForAction('Unlock Note');
+                              if (!authenticated) return;
+                            }
+                            await _openEditor(note);
+                            if (note.oneTimeView) {
+                              if (widget.authResult.kind == VaultKind.decoy) {
+                                await DecoySeedService.deleteNote(note.id);
+                              } else {
+                                await _repo!.delete(note.id);
+                              }
+                            }
+                          },
+                          onDelete: (note) async {
+                            if (widget.authResult.kind == VaultKind.decoy) {
+                              await DecoySeedService.deleteNote(note.id);
+                            } else {
+                              await _itemActions?.deleteNote(context, note);
+                            }
+                            await _load();
+                          },
+                          onToggleArchive: (note) async {
+                            if (widget.authResult.kind == VaultKind.decoy) return;
+                            await _itemActions?.archiveNote(context, note);
+                            await _load();
+                          },
+                          onToggleFavorite: (note) async {
+                            if (widget.authResult.kind == VaultKind.decoy) {
+                              await DecoySeedService.saveNote(
+                                note.copyWith(favorite: !note.favorite),
+                              );
+                            } else {
+                              await _repo!.save(note.copyWith(favorite: !note.favorite));
+                            }
+                            await _load();
+                          },
+                          onTogglePin: (note) async {
+                            if (widget.authResult.kind == VaultKind.decoy) return;
+                            await _itemActions?.pinNote(context, note);
+                            await _load();
+                          },
+                          onToggleLock: (note) async {
+                            if (widget.authResult.kind == VaultKind.decoy) return;
+                            await _itemActions?.lockNote(context, note);
+                            await _load();
+                          },
+                          onShare: (note) async {
+                            if (widget.authResult.kind == VaultKind.decoy) return;
+                            await _itemActions?.shareNote(context, note);
+                          },
+                          onMove: (note) async {
+                            if (widget.authResult.kind == VaultKind.decoy) return;
+                            await _itemActions?.moveNote(context, note);
+                            await _load();
+                          },
+                        ),
+                      ),
+                    );
+                  },
+                ),
         ),
       ],
+    );
+  }
+
+  Widget _buildGmailSelectionBanner() {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      color: cs.secondaryContainer.withValues(alpha: 0.5),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(
+            'All ${_selectedIds.length} notes on this page are selected. ',
+            style: const TextStyle(fontSize: 13),
+          ),
+          TextButton(
+            onPressed: _selectAll,
+            style: TextButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+            ),
+            child: Text(
+              'Select all ${_filteredNotes.length} notes',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: cs.primary,
+                fontSize: 13,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

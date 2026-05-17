@@ -74,7 +74,14 @@ class SearchService {
       filters.pinned == null &&
       filters.favorite == null &&
       filters.hasAttachments == null &&
-      filters.category == null;
+      filters.category == null &&
+      filters.hasImages == null &&
+      filters.hasPdfs == null &&
+      filters.hasAudio == null &&
+      filters.hasVideo == null &&
+      filters.isLocked == null &&
+      filters.isImportedZip == null &&
+      (filters.tags == null || filters.tags!.isEmpty);
 
   List<SecureNote> _applyCategoryFilter(
     List<SecureNote> notes,
@@ -140,12 +147,34 @@ class SearchService {
   // ── Private helpers ───────────────────────────────────────────────────────
 
   void _applySort(List<SearchMatch> results, String? sort) {
-    if (sort == 'title') {
-      results.sort((a, b) => a.note.title.compareTo(b.note.title));
-    } else if (sort == 'priority') {
-      results.sort((a, b) => a.note.priority.compareTo(b.note.priority));
-    } else {
-      results.sort((a, b) => b.note.updatedAt.compareTo(a.note.updatedAt));
-    }
+    results.sort((a, b) {
+      switch (sort) {
+        case 'titleAsc':
+        case 'title':
+        case 'A-Z':
+          return a.note.title.toLowerCase().compareTo(b.note.title.toLowerCase());
+        case 'priority':
+          return b.note.priority.compareTo(a.note.priority);
+        case 'dateAsc':
+        case 'oldest':
+        case 'Oldest':
+          return a.note.createdAt.compareTo(b.note.createdAt);
+        case 'updatedDesc':
+        case 'lastEdited':
+        case 'Last Edited':
+          return b.note.updatedAt.compareTo(a.note.updatedAt);
+        case 'sizeDesc':
+        case 'largest':
+        case 'Largest Notes':
+          final sizeA = a.note.body.length + a.note.attachments.fold(0, (sum, att) => sum + att.size);
+          final sizeB = b.note.body.length + b.note.attachments.fold(0, (sum, att) => sum + att.size);
+          return sizeB.compareTo(sizeA);
+        case 'dateDesc':
+        case 'newest':
+        case 'Newest':
+        default:
+          return b.note.createdAt.compareTo(a.note.createdAt);
+      }
+    });
   }
 }

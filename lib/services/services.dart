@@ -32,6 +32,7 @@ export 'ocr_preprocessor.dart' show OcrPreprocessor, OcrPreprocessingResult;
 export 'ocr_queue_service.dart'
     show OcrQueueService, OcrJob, OcrJobState, OcrBatchItem;
 export 'ocr_service.dart' show OcrService;
+export 'smart_ocr_scanner.dart' show SmartOcrScanner;
 export 'restore_service.dart' show RestoreService, RestoreProgressCallback;
 export 'search_service.dart' show SearchService;
 export 'smart_indexer.dart'
@@ -43,3 +44,4 @@ export 'storage_insights_service.dart' show StorageInsightsService, DriveStorage
 export 'conversion_service.dart' show ConversionService, ConversionResult, ConversionFormat;
 export 'pdf_tools_service.dart' show PdfToolsService;
 export 'temp_file_manager.dart' show TempFileManager;
+export 'note_import_service.dart' show NoteImportService, ImportProgressCallback, ImportStage, ImportStats;

@@ -48,6 +48,15 @@ class SearchFilters {
   final int? minPriority;
   final int? maxPriority;
   final String? category;
+  
+  // New filters
+  final bool? hasImages;
+  final bool? hasPdfs;
+  final bool? hasAudio;
+  final bool? hasVideo;
+  final bool? isLocked;
+  final bool? isImportedZip;
+  final List<String>? tags;
 
   const SearchFilters({
     this.query = '',
@@ -61,6 +70,13 @@ class SearchFilters {
     this.minPriority,
     this.maxPriority,
     this.category,
+    this.hasImages,
+    this.hasPdfs,
+    this.hasAudio,
+    this.hasVideo,
+    this.isLocked,
+    this.isImportedZip,
+    this.tags,
   });
 
   Map<String, dynamic> toJson() => {
@@ -75,6 +91,13 @@ class SearchFilters {
     'minPriority': minPriority,
     'maxPriority': maxPriority,
     'category': category,
+    'hasImages': hasImages,
+    'hasPdfs': hasPdfs,
+    'hasAudio': hasAudio,
+    'hasVideo': hasVideo,
+    'isLocked': isLocked,
+    'isImportedZip': isImportedZip,
+    'tags': tags,
   };
 
   factory SearchFilters.fromJson(Map<String, dynamic> json) => SearchFilters(
@@ -91,6 +114,13 @@ class SearchFilters {
     minPriority: json['minPriority'] as int?,
     maxPriority: json['maxPriority'] as int?,
     category: json['category'] as String?,
+    hasImages: json['hasImages'] as bool?,
+    hasPdfs: json['hasPdfs'] as bool?,
+    hasAudio: json['hasAudio'] as bool?,
+    hasVideo: json['hasVideo'] as bool?,
+    isLocked: json['isLocked'] as bool?,
+    isImportedZip: json['isImportedZip'] as bool?,
+    tags: json['tags'] != null ? List<String>.from(json['tags'] as Iterable) : null,
   );
 
   SearchFilters copyWith({
@@ -105,6 +135,13 @@ class SearchFilters {
     int? minPriority,
     int? maxPriority,
     String? category,
+    bool? hasImages,
+    bool? hasPdfs,
+    bool? hasAudio,
+    bool? hasVideo,
+    bool? isLocked,
+    bool? isImportedZip,
+    List<String>? tags,
   }) {
     return SearchFilters(
       query: query ?? this.query,
@@ -118,6 +155,13 @@ class SearchFilters {
       minPriority: minPriority ?? this.minPriority,
       maxPriority: maxPriority ?? this.maxPriority,
       category: category ?? this.category,
+      hasImages: hasImages ?? this.hasImages,
+      hasPdfs: hasPdfs ?? this.hasPdfs,
+      hasAudio: hasAudio ?? this.hasAudio,
+      hasVideo: hasVideo ?? this.hasVideo,
+      isLocked: isLocked ?? this.isLocked,
+      isImportedZip: isImportedZip ?? this.isImportedZip,
+      tags: tags ?? this.tags,
     );
   }
 }
@@ -197,6 +241,14 @@ class SmartIndexerService {
       final maxP = filters.maxPriority;
       if (maxP != null && note.priority > maxP) continue;
 
+      if (filters.hasImages != null && note.attachments.any((a) => a.kind == 'image') != filters.hasImages) continue;
+      if (filters.hasPdfs != null && note.attachments.any((a) => a.name.toLowerCase().endsWith('.pdf')) != filters.hasPdfs) continue;
+      if (filters.hasAudio != null && (note.type == NoteType.voice || note.attachments.any((a) => a.kind == 'voice' || a.kind == 'audio')) != filters.hasAudio) continue;
+      if (filters.hasVideo != null && note.attachments.any((a) => a.kind == 'video') != filters.hasVideo) continue;
+      if (filters.isLocked != null && note.locked != filters.isLocked) continue;
+      if (filters.isImportedZip != null && (note.folder.toLowerCase().contains('import') || note.tags.any((t) => t.toLowerCase().contains('import'))) != filters.isImportedZip) continue;
+      if (filters.tags != null && filters.tags!.isNotEmpty && !filters.tags!.every((t) => note.tags.contains(t))) continue;
+
       if (q.isEmpty) {
         results.add(SearchMatch(note: note, score: 1.0));
         continue;
@@ -274,14 +326,35 @@ class SmartIndexerService {
 
     results.sort((a, b) {
       final cmp = b.score.compareTo(a.score);
-      if (cmp != 0) return cmp;
-      if (filters.sort == 'title') {
-        return a.note.title.compareTo(b.note.title);
+      if (cmp != 0 && filters.query.isNotEmpty) return cmp;
+      
+      switch (filters.sort) {
+        case 'titleAsc':
+        case 'title':
+        case 'A-Z':
+          return a.note.title.toLowerCase().compareTo(b.note.title.toLowerCase());
+        case 'priority':
+          return b.note.priority.compareTo(a.note.priority);
+        case 'dateAsc':
+        case 'oldest':
+        case 'Oldest':
+          return a.note.createdAt.compareTo(b.note.createdAt);
+        case 'updatedDesc':
+        case 'lastEdited':
+        case 'Last Edited':
+          return b.note.updatedAt.compareTo(a.note.updatedAt);
+        case 'sizeDesc':
+        case 'largest':
+        case 'Largest Notes':
+          final sizeA = a.note.body.length + a.note.attachments.fold(0, (sum, att) => sum + att.size);
+          final sizeB = b.note.body.length + b.note.attachments.fold(0, (sum, att) => sum + att.size);
+          return sizeB.compareTo(sizeA);
+        case 'dateDesc':
+        case 'newest':
+        case 'Newest':
+        default:
+          return b.note.createdAt.compareTo(a.note.createdAt);
       }
-      if (filters.sort == 'priority') {
-        return a.note.priority.compareTo(b.note.priority);
-      }
-      return b.note.updatedAt.compareTo(a.note.updatedAt);
     });
 
     return results;
