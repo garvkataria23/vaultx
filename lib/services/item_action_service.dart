@@ -88,6 +88,17 @@ class ItemActionService {
     );
   }
 
+  Future<void> lockNote(BuildContext context, SecureNote note) async {
+    final updated = note.copyWith(locked: !note.locked);
+    await repo.save(updated);
+    if (!context.mounted) return;
+    HapticFeedback.mediumImpact();
+    _showSnackBar(
+      context,
+      updated.locked ? 'Note locked' : 'Note unlocked',
+    );
+  }
+
   Future<void> toggleFileBackup(BuildContext context, SecureDriveFile file) async {
     final updated = file.copyWith(backupExcluded: !file.backupExcluded);
     await drive.updateFile(updated);

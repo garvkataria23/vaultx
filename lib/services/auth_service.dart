@@ -122,6 +122,11 @@ class VaultAuthService {
     return null;
   }
 
+  Future<bool> verifyDecoyPassword(String password) async {
+    final result = await _checkDecoy(password);
+    return result != null;
+  }
+
   // ---------------------------------------------------------------------------
   // Biometric unlock
   // ---------------------------------------------------------------------------

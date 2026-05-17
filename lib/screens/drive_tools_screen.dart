@@ -373,7 +373,7 @@ class _DriveToolsScreenState extends State<DriveToolsScreen> {
       builder: (_) => SmartCompressionSheet(
         filePath: tempPath,
         onComplete: (result, keep) async {
-          Navigator.pop(context);
+          if (mounted) Navigator.pop(context);
           if (!result.success) {
             try { await File(tempPath).delete(); } catch (_) {}
             _loadStats();
@@ -425,7 +425,7 @@ class _DriveToolsScreenState extends State<DriveToolsScreen> {
       builder: (_) => DocumentConversionSheet(
         filePath: tempPath,
         onComplete: (result, keep) async {
-          Navigator.pop(context);
+          if (mounted) Navigator.pop(context);
           if (!result.success) {
             try { await File(tempPath).delete(); } catch (_) {}
             _loadStats();

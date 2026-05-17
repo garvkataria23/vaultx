@@ -67,6 +67,8 @@ dependencies:
   pdf: ^3.10.7
   xml: ^6.3.0
   simple_pdf_compression: ^0.0.2
+  syncfusion_flutter_pdf: ^33.2.6
+  flutter_markdown_plus: ^1.0.7
   
 
 dev_dependencies:

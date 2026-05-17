@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../models/models.dart';
 import 'smart_category_badge.dart';
@@ -14,6 +15,7 @@ class NoteCard extends StatelessWidget {
     required this.onToggleArchive,
     required this.onToggleFavorite,
     required this.onTogglePin,
+    required this.onToggleLock,
     required this.onShare,
     required this.onMove,
     this.onToggleBackup,
@@ -26,6 +28,7 @@ class NoteCard extends StatelessWidget {
   final VoidCallback onToggleArchive;
   final VoidCallback onToggleFavorite;
   final VoidCallback onTogglePin;
+  final VoidCallback onToggleLock;
   final VoidCallback onShare;
   final VoidCallback onMove;
   final VoidCallback? onToggleBackup;
@@ -178,6 +181,7 @@ class NoteCard extends StatelessWidget {
               PopupMenuButton<String>(
                 onSelected: (v) {
                   if (v == 'pin') onTogglePin();
+                  if (v == 'lock') onToggleLock();
                   if (v == 'fav') onToggleFavorite();
                   if (v == 'archive') onToggleArchive();
                   if (v == 'share') onShare();
@@ -189,6 +193,10 @@ class NoteCard extends StatelessWidget {
                   PopupMenuItem(
                     value: 'pin',
                     child: Text(note.pinned ? 'Unpin' : 'Pin'),
+                  ),
+                  PopupMenuItem(
+                    value: 'lock',
+                    child: Text(note.locked ? 'Unlock' : 'Lock'),
                   ),
                   PopupMenuItem(
                     value: 'fav',
@@ -221,6 +229,226 @@ class NoteCard extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class ModernNoteCard extends StatelessWidget {
+  const ModernNoteCard({
+    super.key,
+    required this.note,
+    required this.onTap,
+    required this.onDelete,
+    required this.onToggleArchive,
+    required this.onToggleFavorite,
+    required this.onTogglePin,
+    required this.onToggleLock,
+    required this.onShare,
+    required this.onMove,
+    this.isGrid = false,
+    this.category,
+    this.isSelected = false,
+    this.onSelectionToggle,
+  });
+
+  final SecureNote note;
+  final VoidCallback onTap;
+  final VoidCallback onDelete;
+  final VoidCallback onToggleArchive;
+  final VoidCallback onToggleFavorite;
+  final VoidCallback onTogglePin;
+  final VoidCallback onToggleLock;
+  final VoidCallback onShare;
+  final VoidCallback onMove;
+  final bool isGrid;
+  final String? category;
+  final bool isSelected;
+  final VoidCallback? onSelectionToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final timeStr = _formatDate(note.updatedAt);
+
+    return SwipeActionTile(
+      isPinned: note.pinned,
+      isArchived: note.archived,
+      onAction: (action) {
+        switch (action) {
+          case SwipeAction.pin:
+            onTogglePin();
+          case SwipeAction.archive:
+            onToggleArchive();
+          case SwipeAction.share:
+            onShare();
+          case SwipeAction.move:
+            onMove();
+          case SwipeAction.delete:
+            onDelete();
+        }
+      },
+      child: GestureDetector(
+        onTap: isSelected ? onSelectionToggle : onTap,
+        onLongPress: () {
+          HapticFeedback.heavyImpact();
+          onSelectionToggle?.call();
+        },
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
+          decoration: BoxDecoration(
+            color: isSelected ? cs.primaryContainer.withValues(alpha: 0.7) : cs.surfaceContainerLow,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: isSelected 
+                  ? cs.primary 
+                  : (note.pinned 
+                      ? cs.primary.withValues(alpha: 0.4) 
+                      : cs.outlineVariant.withValues(alpha: 0.3)),
+              width: (note.pinned || isSelected) ? 1.5 : 1,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.05),
+                blurRadius: isSelected ? 15 : 10,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              // Grid View usually provides bounded height via childAspectRatio.
+              // List View and Masonry View (in a Column) provide unbounded height.
+              final bool hasBoundedHeight = constraints.hasBoundedHeight;
+              
+              return Stack(
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: hasBoundedHeight ? MainAxisSize.max : MainAxisSize.min,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Row(
+                              children: [
+                                if (note.pinned && !isSelected)
+                                  Padding(
+                                    padding: const EdgeInsets.only(right: 8),
+                                    child: Icon(Icons.push_pin, size: 16, color: cs.primary),
+                                  ),
+                                Expanded(
+                                  child: Text(
+                                    note.title.isEmpty ? 'Untitled Note' : note.title,
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 16,
+                                      color: isSelected ? cs.onPrimaryContainer : cs.onSurface,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                if (note.locked)
+                                  Icon(Icons.lock_outline, size: 16, color: cs.primary),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              note.locked ? 'Content Locked' : note.body,
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: isSelected 
+                                    ? cs.onPrimaryContainer.withValues(alpha: 0.8) 
+                                    : cs.onSurfaceVariant.withValues(alpha: 0.8),
+                                height: 1.4,
+                              ),
+                              maxLines: isGrid ? 4 : 8,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (hasBoundedHeight) const Spacer() else const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: isSelected 
+                              ? cs.primary.withValues(alpha: 0.1) 
+                              : cs.surfaceContainerHighest.withValues(alpha: 0.2),
+                          borderRadius: const BorderRadius.vertical(bottom: Radius.circular(20)),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              switch (note.type) {
+                                NoteType.checklist => Icons.checklist_rtl_outlined,
+                                NoteType.voice => Icons.mic_none_outlined,
+                                NoteType.drawing => Icons.brush_outlined,
+                                _ => Icons.notes_outlined,
+                              },
+                              size: 14,
+                              color: isSelected ? cs.primary : cs.primary,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              timeStr,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: isSelected 
+                                    ? cs.onPrimaryContainer.withValues(alpha: 0.6) 
+                                    : cs.onSurfaceVariant.withValues(alpha: 0.6),
+                              ),
+                            ),
+                            const Spacer(),
+                            if (category != null)
+                              SmartCategoryBadge(category: category!, size: 8),
+                            const SizedBox(width: 8),
+                            GestureDetector(
+                              onTap: onToggleFavorite,
+                              child: Icon(
+                                note.favorite ? Icons.star : Icons.star_outline,
+                                size: 18,
+                                color: note.favorite ? Colors.amber : (isSelected ? cs.onPrimaryContainer : cs.onSurfaceVariant),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (isSelected)
+                    Positioned(
+                      top: 12,
+                      right: 12,
+                      child: Container(
+                        padding: const EdgeInsets.all(2),
+                        decoration: BoxDecoration(
+                          color: cs.primary,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(Icons.check, size: 14, color: cs.onPrimary),
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _formatDate(DateTime date) {
+    final now = DateTime.now();
+    final diff = now.difference(date);
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    if (diff.inDays < 7) return '${diff.inDays}d ago';
+    return '${date.day}/${date.month}/${date.year}';
   }
 }
 

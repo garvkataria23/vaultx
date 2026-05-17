@@ -20,7 +20,7 @@ if (keystorePropertiesFile.exists()) {
 }
 
 android {
-    namespace = "com.example.vaultx"
+    namespace = "com.garv.vaultx"
 
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
@@ -35,7 +35,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.vaultx.secure"
+        applicationId = "com.garv.vaultx"
 
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion

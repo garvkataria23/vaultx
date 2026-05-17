@@ -295,7 +295,7 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
 
     final tempPath = await svc.decryptToTemp(file);
     
-    if (mounted) Navigator.pop(context); // Close "Preparing" dialog
+    if (mounted) Navigator.of(context, rootNavigator: true).pop(); // Close "Preparing" dialog
 
     if (tempPath == null) {
       FloatingNotificationService.instance.show('Failed to prepare file for optimization', error: true);
@@ -312,7 +312,7 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
       builder: (_) => SmartCompressionSheet(
         filePath: tempPath,
         onComplete: (compressionResult, keepOriginal) async {
-          Navigator.pop(context); // Close sheet
+          if (mounted) Navigator.of(context).pop(); // Close sheet
           if (!compressionResult.success) {
             try { await File(tempPath).delete(); } catch (_) {}
             return;
@@ -354,7 +354,7 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
 
     final tempPath = await svc.decryptToTemp(file);
     
-    if (mounted) Navigator.pop(context); // Close "Preparing" dialog
+    if (mounted) Navigator.of(context, rootNavigator: true).pop(); // Close "Preparing" dialog
 
     if (tempPath == null) {
       FloatingNotificationService.instance.show('Failed to prepare file for conversion', error: true);
@@ -371,7 +371,7 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
       builder: (_) => DocumentConversionSheet(
         filePath: tempPath,
         onComplete: (conversionResult, keepOriginal) async {
-          Navigator.pop(context); // Close sheet
+          if (mounted) Navigator.of(context).pop(); // Close sheet
           
           final ext = conversionResult.path.split('.').last.toLowerCase();
           final mimeType = ext == 'pdf' ? 'application/pdf' : (ext == 'txt' ? 'text/plain' : 'application/octet-stream');
@@ -416,21 +416,27 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
     var progress = 0.0;
     var progressLabel = 'Encrypting...';
     
+    // We need a way to trigger dialog rebuild
+    void Function(void Function())? dialogSetter;
+
     showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Updating File'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              LinearProgressIndicator(value: progress),
-              const SizedBox(height: 12),
-              Text(progressLabel),
-            ],
-          ),
-        ),
+        builder: (context, setDialogState) {
+          dialogSetter = setDialogState;
+          return AlertDialog(
+            title: const Text('Updating File'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                LinearProgressIndicator(value: progress),
+                const SizedBox(height: 12),
+                Text(progressLabel),
+              ],
+            ),
+          );
+        },
       ),
     );
 
@@ -440,8 +446,12 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
       kind: kind,
       mimeType: mimeType,
       onProgress: (value, label) {
-        progress = value;
-        progressLabel = label;
+        if (dialogSetter != null) {
+          dialogSetter!(() {
+            progress = value;
+            progressLabel = label;
+          });
+        }
       },
     );
 

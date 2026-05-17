@@ -1,4 +1,4 @@
-package com.example.vaultx
+package com.garv.vaultx
 
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager

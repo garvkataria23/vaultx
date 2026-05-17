@@ -6,9 +6,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:open_file/open_file.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
-import '../services/services.dart';
 import '../models/models.dart';
+import '../services/services.dart';
 import '../widgets/widgets.dart';
 
 /// Full-screen image viewer with pinch-to-zoom.
@@ -172,9 +174,15 @@ class _ImagePreviewState extends State<_ImagePreview> {
 
 /// Editor for creating and modifying encrypted notes.
 class NoteEditor extends StatefulWidget {
-  const NoteEditor({super.key, required this.note, required this.blobs});
+  const NoteEditor({
+    super.key,
+    required this.note,
+    required this.blobs,
+    this.onAutoSave,
+  });
   final SecureNote? note;
   final EncryptedBlobService? blobs;
+  final Future<void> Function(SecureNote)? onAutoSave;
 
   @override
   State<NoteEditor> createState() => _NoteEditorState();
@@ -212,6 +220,12 @@ class _NoteEditorState extends State<NoteEditor> {
   List<String>? _ocrJobIds;
   final OcrQueueService _queueService = OcrQueueService();
 
+  // Auto-save state
+  Timer? _autoSaveTimer;
+  bool _isAutoSaving = false;
+  DateTime? _lastSaved;
+  bool _isPreviewMode = false;
+
   @override
   void initState() {
     super.initState();
@@ -230,12 +244,10 @@ class _NoteEditorState extends State<NoteEditor> {
     _ocrText.text = _note.ocrText;
 
     // ✅ FIX: Save selection whenever body changes while focused
-    _body.addListener(() {
-      if (_bodyFocus.hasFocus) {
-        _savedSelection = _body.selection;
-      }
-      _scanSensitiveText();
-    });
+    _body.addListener(_onContentChanged);
+    _title.addListener(_onContentChanged);
+    _folder.addListener(_onContentChanged);
+    _tags.addListener(_onContentChanged);
 
     // ✅ FIX: Lock screen if note.locked == true
     if (_note.locked) {
@@ -244,8 +256,59 @@ class _NoteEditorState extends State<NoteEditor> {
     }
   }
 
+  void _onContentChanged() {
+    if (_bodyFocus.hasFocus) {
+      _savedSelection = _body.selection;
+    }
+    _scanSensitiveText();
+    _triggerAutoSave();
+  }
+
+  void _triggerAutoSave() {
+    _autoSaveTimer?.cancel();
+    _autoSaveTimer = Timer(const Duration(seconds: 2), _performAutoSave);
+  }
+
+  Future<void> _performAutoSave() async {
+    if (widget.onAutoSave == null || !mounted) return;
+
+    // Don't save if everything is empty (for new notes)
+    if (_title.text.trim().isEmpty && _body.text.trim().isEmpty) return;
+
+    setState(() => _isAutoSaving = true);
+
+    try {
+      final updatedNote = _note.copyWith(
+        title: _title.text.trim().isEmpty ? 'Untitled' : _title.text.trim(),
+        body: _body.text,
+        folder: _folder.text.trim().isEmpty ? 'Private' : _folder.text.trim(),
+        tags: _tags.text
+            .split(',')
+            .map((e) => e.trim())
+            .where((e) => e.isNotEmpty)
+            .toList(),
+        ocrText: _ocrText.text,
+      );
+
+      await widget.onAutoSave!(updatedNote);
+      
+      if (mounted) {
+        setState(() {
+          _note = updatedNote;
+          _isAutoSaving = false;
+          _lastSaved = DateTime.now();
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isAutoSaving = false);
+      }
+    }
+  }
+
   @override
   void dispose() {
+    _autoSaveTimer?.cancel();
     _clipboardTimer?.cancel();
     _title.dispose();
     _body.dispose();
@@ -391,23 +454,6 @@ class _NoteEditorState extends State<NoteEditor> {
     if (items.isEmpty) return;
     final ids = _queueService.enqueueBatch(items);
     setState(() => _ocrJobIds = ids);
-  }
-
-  void _save() {
-    Navigator.pop(
-      context,
-      _note.copyWith(
-        title: _title.text.trim().isEmpty ? 'Untitled' : _title.text.trim(),
-        body: _body.text,
-        folder: _folder.text.trim().isEmpty ? 'Private' : _folder.text.trim(),
-        tags: _tags.text
-            .split(',')
-            .map((e) => e.trim())
-            .where((e) => e.isNotEmpty)
-            .toList(),
-        ocrText: _ocrText.text,
-      ),
-    );
   }
 
   void _showVersionHistory() {
@@ -581,11 +627,48 @@ class _NoteEditorState extends State<NoteEditor> {
     // ✅ Show lock screen until authenticated
     if (_isLocked) return _buildLockScreen();
 
-    return Scaffold(
-      resizeToAvoidBottomInset: true,
-      appBar: AppBar(
-        title: const Text('Secure note'),
+    return PopScope(
+      canPop: true,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) {
+          // Final save attempt when leaving
+          _performAutoSave();
+        }
+      },
+      child: Scaffold(
+        resizeToAvoidBottomInset: true,
+        appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Secure note'),
+            if (_isAutoSaving)
+              Text(
+                'Saving...',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.primary,
+                  fontSize: 10,
+                  height: 1,
+                ),
+              )
+            else if (_lastSaved != null)
+              Text(
+                'Saved',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 10,
+                  height: 1,
+                ),
+              ),
+          ],
+        ),
         actions: [
+          IconButton(
+            onPressed: () => setState(() => _isPreviewMode = !_isPreviewMode),
+            icon: Icon(_isPreviewMode ? Icons.edit : Icons.preview),
+            tooltip: _isPreviewMode ? 'Edit Mode' : 'Reading Mode',
+          ),
           IconButton(
             onPressed: () => ClipboardGuard.copySensitive(_body.text),
             icon: const Icon(Icons.copy),
@@ -608,11 +691,6 @@ class _NoteEditorState extends State<NoteEditor> {
               icon: const Icon(Icons.history),
               tooltip: 'Version history',
             ),
-          IconButton(
-            onPressed: _save,
-            icon: const Icon(Icons.save),
-            tooltip: 'Save',
-          ),
         ],
       ),
       body: ListView(
@@ -784,22 +862,46 @@ class _NoteEditorState extends State<NoteEditor> {
               ),
             ),
           const SizedBox(height: 12),
-          TextField(
-            controller: _body,
-            focusNode: _bodyFocus, // ✅ FIX: track focus for selection saving
-            minLines: 12,
-            maxLines: 24,
-            enableSuggestions: true, // ✅ REMOVED incognito
-            autocorrect: true, // ✅ REMOVED incognito
-            decoration: InputDecoration(
-              labelText: switch (_note.type) {
-                NoteType.checklist => 'Checklist lines',
-                NoteType.voice => 'Voice note transcript',
-                NoteType.drawing => 'Drawing description',
-                _ => 'Encrypted note body',
-              },
+          if (_isPreviewMode)
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.5)),
+              ),
+              child: MarkdownBody(
+                data: _body.text.isEmpty ? '*Empty note*' : _body.text,
+                selectable: true,
+                onTapLink: (text, href, title) {
+                  if (href != null) launchUrl(Uri.parse(href));
+                },
+                styleSheet: MarkdownStyleSheet(
+                  p: Theme.of(context).textTheme.bodyMedium,
+                  h1: Theme.of(context).textTheme.headlineMedium,
+                  h2: Theme.of(context).textTheme.headlineSmall,
+                  h3: Theme.of(context).textTheme.titleLarge,
+                  listBullet: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ),
+            )
+          else
+            TextField(
+              controller: _body,
+              focusNode: _bodyFocus, // ✅ FIX: track focus for selection saving
+              minLines: 12,
+              maxLines: 24,
+              enableSuggestions: true, // ✅ REMOVED incognito
+              autocorrect: true, // ✅ REMOVED incognito
+              decoration: InputDecoration(
+                labelText: switch (_note.type) {
+                  NoteType.checklist => 'Checklist lines',
+                  NoteType.voice => 'Voice note transcript',
+                  NoteType.drawing => 'Drawing description',
+                  _ => 'Encrypted note body',
+                },
+              ),
             ),
-          ),
           const SizedBox(height: 12),
           Row(
             children: [
@@ -1016,6 +1118,7 @@ class _NoteEditorState extends State<NoteEditor> {
             ),
         ],
       ),
+    ),
     );
   }
 }

@@ -205,6 +205,32 @@ class VaultRepository {
     BackupChangeTracker.instance.notifyNotesChanged(estimatedBytes: size);
   }
 
+  Future<void> saveAll(List<SecureNote> notes) async {
+    final Map<String, dynamic> batch = {};
+    int totalSize = 0;
+
+    for (final note in notes) {
+      final salt = base64Encode(_crypto.randomBytes(16));
+      final recordKey = _crypto.deriveRecordKey(masterKey, note.id, salt);
+      final payload = _crypto.encryptJson(note.toJson(), recordKey);
+      
+      batch['$_prefix:${note.id}'] = {
+        'id': note.id,
+        'salt': salt,
+        'payload': payload,
+        'backupExcluded': note.backupExcluded,
+        'folder': note.folder,
+      };
+      
+      _decryptCache.removeWhere((key, _) => key.startsWith('${note.id}:'));
+      totalSize += utf8.encode(jsonEncode(note.toJson())).length;
+    }
+
+    await _box.putAll(batch);
+    await AuditLog.write('Batch of ${notes.length} notes saved');
+    BackupChangeTracker.instance.notifyNotesChanged(estimatedBytes: totalSize);
+  }
+
   Future<void> delete(String id) async {
     // Remove all cache entries for this note
     _decryptCache.removeWhere((key, _) => key.startsWith('$id:'));
@@ -529,6 +555,22 @@ class EncryptedBlobService {
       kind: kind,
       duration: duration,
     );
+  }
+
+  Future<Uint8List> decryptAttachmentToBytes(
+    String noteId,
+    SecureAttachment attachment,
+  ) async {
+    final encrypted = await File(attachment.encryptedPath).readAsBytes();
+    final key = _crypto.deriveRecordKey(
+      masterKey,
+      '$noteId:${attachment.id}',
+      attachment.salt,
+    );
+    final clearBytes = encrypted.length > 102400
+        ? await _crypto.decryptBytesIsolate(encrypted, key)
+        : _crypto.decryptBytes(encrypted, key);
+    return Uint8List.fromList(clearBytes);
   }
 
   Future<String> decryptAttachmentToTemp(

@@ -161,7 +161,7 @@ class _BackupScreenState extends State<BackupScreen> {
     try {
       final ok = await _drive!.uploadBackup(({bool compressMedia = false}) async {
         final result = await _backupService!.createBackup(compressMedia: compressMedia);
-        setState(() => _backupPhase = 'Uploading to Google Drive...');
+        if (mounted) setState(() => _backupPhase = 'Uploading to Google Drive...');
         return result.data;
       }, verificationService: _backupService,
          onPhaseChange: (phase) {

@@ -10,6 +10,7 @@ import '../services/secure_delete_service.dart';
 import '../theme/custom_theme_creator_screen.dart';
 import '../theme/theme_picker.dart';
 import '../widgets/widgets.dart';
+import '../widgets/import_widgets.dart';
 import 'backup_screen.dart';
 import 'privacy_policy_screen.dart';
 import 'restore_screen.dart';
@@ -143,6 +144,7 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
   // Google Drive
   GoogleDriveBackupService? _gdriveBackup;
   bool _gdriveSigningIn = false;
+  bool _importingZip = false;
   String? _googleEmail;
 
   // Enriched posture
@@ -380,12 +382,15 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
     setState(() => _gdriveSigningIn = true);
     final service = _getGDriveService();
     if (service == null) {
-      setState(() => _gdriveSigningIn = false);
+      if (mounted) setState(() => _gdriveSigningIn = false);
       _notify('Google Drive backup unavailable in decoy mode', error: true);
       return;
     }
     var success = await service.signInSilently();
     if (!success) success = await service.signIn();
+    
+    if (!mounted) return;
+    
     setState(() {
       _gdriveSigningIn = false;
       if (success) _googleEmail = service.signedInEmail;
@@ -488,44 +493,143 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
     }
   }
 
-  Future<bool> _confirmRestoreCredential() async {
+  Future<void> _importBulkNotesZip() async {
+    if (_importingZip) return;
+
+    // Require authentication before bulk import
+    final authenticated = await _authenticateForAction('Authenticate Bulk Import');
+    if (!authenticated) return;
+
+    if (!mounted) return;
+
+    // Pick file first (outside of progress dialog)
+    final picked = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['zip'],
+    );
+    if (picked == null || picked.files.isEmpty) return;
+
+    if (!mounted) return;
+
+    setState(() => _importingZip = true);
+    
+    final importService = NoteImportService(
+      widget.repo, 
+      isDecoy: widget.vaultKind == VaultKind.decoy,
+    );
+
+    final progressValue = ValueNotifier<(ImportStage, double, String, int?, int?)>(
+      (ImportStage.preparing, 0.0, 'Starting...', null, null),
+    );
+
+    // Show progress dialog
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => ValueListenableBuilder<(ImportStage, double, String, int?, int?)>(
+        valueListenable: progressValue,
+        builder: (ctx, val, _) => NoteImportProgressDialog(
+          stage: val.$1,
+          progress: val.$2,
+          message: val.$3,
+          current: val.$4,
+          total: val.$5,
+        ),
+      ),
+    );
+
+    try {
+      final stats = await importService.importZip(
+        picked: picked,
+        onProgress: (stage, progress, message, {current, total}) {
+          progressValue.value = (stage, progress, message, current, total);
+        },
+      );
+
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop(); // Close progress dialog
+        
+        if (stats.totalNotes > 0) {
+          await widget.onDataChanged();
+          
+          if (!mounted) return;
+          final result = await showDialog<String>(
+            context: context,
+            builder: (_) => ImportSuccessDialog(stats: stats),
+          );
+          
+          if (result == 'view' && mounted) {
+            _notify('Imported notes are now available in all views');
+          }
+        } else {
+          _notify('No notes imported. Check if ZIP contains supported files.', error: true);
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop(); // Close progress dialog
+        _notify('Import failed: $e', error: true);
+      }
+    } finally {
+      progressValue.dispose();
+      if (mounted) {
+        setState(() => _importingZip = false);
+      }
+    }
+  }
+
+  Future<bool> _authenticateForAction(String title) async {
+    final bioEnabled = await widget.auth.isBiometricUnlockAvailable();
+    if (bioEnabled) {
+      final ok = await widget.auth.authenticateBiometric();
+      if (ok) return true;
+    }
+
+    if (!mounted) return false;
+
+    // Fallback to password/PIN
     final ctrl = TextEditingController();
     final secret = await showDialog<String>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Authenticate restore'),
+      builder: (dialogCtx) => AlertDialog(
+        title: Text(title),
         content: TextField(
           controller: ctrl,
           obscureText: true,
+          autofocus: true,
           decoration: InputDecoration(
             labelText: widget.repo!.kind == VaultKind.hidden
                 ? 'Hidden vault password'
                 : 'Master password',
           ),
+          onSubmitted: (val) => Navigator.of(dialogCtx).pop(val),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.of(dialogCtx).pop(),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(context, ctrl.text),
+            onPressed: () => Navigator.of(dialogCtx).pop(ctrl.text),
             child: const Text('Verify'),
           ),
         ],
       ),
     );
-    ctrl.clear();
     ctrl.dispose();
+
     if (secret == null || secret.isEmpty) return false;
-    if (!mounted) return false;
+    
     var result = widget.repo!.kind == VaultKind.hidden
         ? await widget.auth.unlockHidden(secret)
         : await widget.auth.unlockWithPassword(secret);
-    if (!mounted) return false;
+    
     result = await widget.auth.verify(result);
-    if (!mounted) return false;
     return result.ok && result.kind == widget.repo!.kind;
+  }
+
+  Future<bool> _confirmRestoreCredential() async {
+    return await _authenticateForAction('Authenticate for Restore');
   }
 
   // ── Biometric ─────────────────────────────────────────────────────────────
@@ -1195,7 +1299,31 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
           ),
         const Divider(height: 32),
 
-        // ── Hidden Vault ──────────────────────────────────────────────────
+        // ── Bulk Import ───────────────────────────────────────────────────
+        const Text(
+          'Bulk Import',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Import multiple notes at once from a ZIP file containing .txt, .pdf, or Samsung Notes (.sdocx) files.',
+          style: TextStyle(
+            fontSize: 13,
+            color: Theme.of(
+              context,
+            ).colorScheme.onSurface.withValues(alpha: 0.5),
+          ),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: _importBulkNotesZip,
+            icon: const Icon(Icons.unarchive),
+            label: const Text('Import Notes from ZIP'),
+          ),
+        ),
+        const Divider(height: 32),
         ExpansionTile(
           leading: const Icon(Icons.visibility_off),
           title: const Text('Hidden vault'),

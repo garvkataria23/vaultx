@@ -74,6 +74,14 @@ class DecoySeedService {
     await _notesBox.delete('decoy:$id');
   }
 
+  static Future<void> saveAllNotes(List<SecureNote> notes) async {
+    final Map<String, dynamic> batch = {};
+    for (final n in notes) {
+      batch['decoy:${n.id}'] = n.toJson();
+    }
+    await _notesBox.putAll(batch);
+  }
+
   static Future<List<SecureDriveFile>> loadDriveFiles() async {
     await ensureSeeded();
     final list = <SecureDriveFile>[];
