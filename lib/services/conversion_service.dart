@@ -128,7 +128,28 @@ class ConversionService {
   }
 
   Future<ConversionResult> _pdfToTxt(String path) async {
-    return ConversionResult.failure('Direct PDF text extraction is coming soon. Use OCR for now.');
+    try {
+      final file = File(path);
+      if (!await file.exists()) return ConversionResult.failure('File not found');
+
+      // 1. Try direct text extraction first (fastest and most accurate for "searchable" PDFs)
+      final directText = await _pdfTools.pdfToText(path);
+      if (directText != null && directText.trim().isNotEmpty) {
+        final outPath = await _tempManager.createTempPath('extracted_pdf.txt');
+        await File(outPath).writeAsString(directText);
+        return ConversionResult(path: outPath);
+      }
+
+      // 2. Fallback to OCR logic (for scanned PDFs)
+      // Note: Full OCR implementation requires a PDF-to-Image renderer (like pdfx or native)
+      // For now, we report failure if direct extraction failed, advising the user.
+      return ConversionResult.failure(
+        'Direct text extraction failed. This PDF might be a scan. '
+        'Please use the Smart OCR Scanner on the PDF images for better results.'
+      );
+    } catch (e) {
+      return ConversionResult.failure('PDF extraction error: $e');
+    }
   }
 
   Future<ConversionResult> _docxToTxt(String path) async {

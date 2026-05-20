@@ -1,10 +1,11 @@
 import 'dart:async';
-
 import 'package:flutter/material.dart';
-
+import 'package:flutter/services.dart';
 import '../models/models.dart';
 import '../services/services.dart';
-import '../widgets/swipe_action_tile.dart';
+import '../widgets/widgets.dart';
+import 'note_editor.dart';
+import 'add_edit_password_screen.dart';
 
 enum _ArchiveSort { dateArchived, name, type }
 
@@ -35,10 +36,12 @@ class ArchiveScreen extends StatefulWidget {
     super.key,
     required this.repo,
     required this.passwordVault,
+    required this.auth,
   });
 
   final VaultRepository repo;
   final PasswordVaultService passwordVault;
+  final VaultAuthService auth;
 
   @override
   State<ArchiveScreen> createState() => _ArchiveScreenState();
@@ -47,10 +50,13 @@ class ArchiveScreen extends StatefulWidget {
 class _ArchiveScreenState extends State<ArchiveScreen> {
   List<_ArchiveItem> _items = [];
   List<_ArchiveItem> _filtered = [];
+  List<SecureNote> _allNotes = [];
   bool _loading = true;
   String _query = '';
   _ArchiveSort _sort = _ArchiveSort.dateArchived;
   final _searchCtrl = TextEditingController();
+  final Set<String> _selectedIds = {};
+  bool _isMultiSelect = false;
 
   @override
   void initState() {
@@ -68,6 +74,7 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
   Future<void> _load() async {
     try {
       final notes = await widget.repo.loadNotes();
+      _allNotes = notes;
       final archivedNotes = notes.where((n) => n.archived).toList();
 
       final archivedPasswords =
@@ -110,6 +117,46 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
     }
   }
 
+  Future<void> _openNote(SecureNote note) async {
+    final updated = note.copyWith(
+      viewCount: note.viewCount + 1,
+      lastViewedAt: DateTime.now(),
+    );
+    await widget.repo.save(updated);
+
+    if (!mounted) return;
+    final blobs = EncryptedBlobService(widget.repo.masterKey);
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => NoteEditor(
+          note: updated,
+          blobs: blobs,
+          allNotes: _allNotes,
+          onAutoSave: (edited) async {
+            await widget.repo.save(edited);
+          },
+        ),
+      ),
+    );
+    _load();
+  }
+
+  Future<void> _openPassword(PasswordEntry entry) async {
+    final result = await Navigator.of(context).push<PasswordEntry>(
+      MaterialPageRoute(
+        builder: (_) => AddEditPasswordScreen(
+          entry: entry,
+          service: widget.passwordVault,
+        ),
+      ),
+    );
+    if (result != null && mounted) {
+      await widget.passwordVault.save(result);
+      _load();
+    }
+  }
+
   void _applyFilter() {
     var result = List<_ArchiveItem>.from(_items);
 
@@ -140,6 +187,153 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
     }
 
     _filtered = result;
+  }
+
+  Future<bool> _authenticateForAction(String title) async {
+    // Enable screen protection during sensitive operations
+    await SecurityPlatform.enableScreenProtection();
+
+    final bioEnabled = await widget.auth.isBiometricUnlockAvailable();
+    if (bioEnabled) {
+      final ok = await widget.auth.authenticateBiometric();
+      if (ok) return true;
+    }
+
+    if (!mounted) return false;
+
+    // Fallback to password/PIN
+    final ctrl = TextEditingController();
+    final secret = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogCtx) => AlertDialog(
+        title: Text(title),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Enter your ${widget.repo.kind == VaultKind.hidden ? 'hidden vault' : 'master'} password to continue.',
+              style: const TextStyle(fontSize: 13),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: ctrl,
+              obscureText: true,
+              autofocus: true,
+              decoration: InputDecoration(
+                labelText: widget.repo.kind == VaultKind.hidden
+                    ? 'Hidden vault password'
+                    : 'Master password',
+                border: const OutlineInputBorder(),
+              ),
+              onSubmitted: (val) => Navigator.of(dialogCtx).pop(val),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(ctrl.text),
+            child: const Text('Verify'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+
+    if (secret == null || secret.isEmpty) return false;
+    
+    var result = widget.repo.kind == VaultKind.hidden
+        ? await widget.auth.unlockHidden(secret)
+        : await widget.auth.unlockWithPassword(secret);
+    
+    result = await widget.auth.verify(result);
+    final success = result.ok && result.kind == widget.repo.kind;
+    
+    if (!success && mounted) {
+      FloatingNotificationService.instance.show('Authentication failed: Invalid password', error: true);
+    }
+    
+    return success;
+  }
+
+  void _toggleSelect(String id) {
+    setState(() {
+      if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
+      } else {
+        _selectedIds.add(id);
+      }
+      _isMultiSelect = _selectedIds.isNotEmpty;
+    });
+  }
+
+  void _selectAll() {
+    setState(() {
+      for (final item in _filtered) {
+        _selectedIds.add(item.id);
+      }
+      _isMultiSelect = true;
+    });
+  }
+
+  void _deselectAll() {
+    setState(() {
+      _selectedIds.clear();
+      _isMultiSelect = false;
+    });
+  }
+
+  Future<void> _bulkAction(String action) async {
+    final selectedItems = _items.where((item) => _selectedIds.contains(item.id)).toList();
+    if (selectedItems.isEmpty) return;
+
+    final authenticated = await _authenticateForAction('Bulk $action');
+    if (!authenticated) return;
+
+    if (action == 'restore') {
+      for (final item in selectedItems) {
+        if (item.isPassword && item.passwordEntry != null) {
+          await widget.passwordVault.save(item.passwordEntry!.copyWith(archived: false));
+        } else if (item.note != null) {
+          await widget.repo.save(item.note!.copyWith(archived: false));
+        }
+      }
+      FloatingNotificationService.instance.show('${selectedItems.length} items restored');
+    } else if (action == 'delete') {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text('Delete ${selectedItems.length} items?'),
+          content: const Text('This will permanently delete the selected items.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Theme.of(ctx).colorScheme.error),
+              onPressed: () => Navigator.pop(ctx, true), 
+              child: const Text('Delete'),
+            ),
+          ],
+        ),
+      );
+      if (confirm == true) {
+        for (final item in selectedItems) {
+          if (item.isPassword && item.passwordEntry != null) {
+            await widget.passwordVault.delete(item.id);
+          } else if (item.note != null) {
+            await widget.repo.secureDelete(item.note!);
+          }
+        }
+        FloatingNotificationService.instance.show('${selectedItems.length} items permanently deleted');
+      }
+    }
+
+    _deselectAll();
+    await _load();
   }
 
   Future<void> _restoreNote(SecureNote note) async {
@@ -218,41 +412,56 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Archive'),
+        leading: _isMultiSelect 
+          ? IconButton(icon: const Icon(Icons.close), onPressed: _deselectAll)
+          : null,
+        title: Text(_isMultiSelect ? '${_selectedIds.length} selected' : 'Archive'),
         actions: [
-          PopupMenuButton<_ArchiveSort>(
-            icon: const Icon(Icons.sort),
-            tooltip: 'Sort',
-            onSelected: (s) {
-              setState(() {
-                _sort = s;
-                _applyFilter();
-              });
-            },
-            itemBuilder: (_) => [
-              CheckedPopupMenuItem(
-                value: _ArchiveSort.dateArchived,
-                checked: _sort == _ArchiveSort.dateArchived,
-                child: const Text('Date archived'),
-              ),
-              CheckedPopupMenuItem(
-                value: _ArchiveSort.name,
-                checked: _sort == _ArchiveSort.name,
-                child: const Text('Name'),
-              ),
-              CheckedPopupMenuItem(
-                value: _ArchiveSort.type,
-                checked: _sort == _ArchiveSort.type,
-                child: const Text('Type'),
-              ),
-            ],
-          ),
+          if (_isMultiSelect) ...[
+            IconButton(icon: const Icon(Icons.unarchive), onPressed: () => _bulkAction('restore'), tooltip: 'Restore'),
+            IconButton(icon: const Icon(Icons.delete_forever, color: Colors.red), onPressed: () => _bulkAction('delete'), tooltip: 'Delete forever'),
+          ] else ...[
+            PopupMenuButton<_ArchiveSort>(
+              icon: const Icon(Icons.sort),
+              tooltip: 'Sort',
+              onSelected: (s) {
+                setState(() {
+                  _sort = s;
+                  _applyFilter();
+                });
+              },
+              itemBuilder: (_) => [
+                CheckedPopupMenuItem(
+                  value: _ArchiveSort.dateArchived,
+                  checked: _sort == _ArchiveSort.dateArchived,
+                  child: const Text('Date archived'),
+                ),
+                CheckedPopupMenuItem(
+                  value: _ArchiveSort.name,
+                  checked: _sort == _ArchiveSort.name,
+                  child: const Text('Name'),
+                ),
+                CheckedPopupMenuItem(
+                  value: _ArchiveSort.type,
+                  checked: _sort == _ArchiveSort.type,
+                  child: const Text('Type'),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
+                SelectionBanner(
+                  selectedCount: _selectedIds.length,
+                  totalCount: _filtered.length,
+                  onSelectAll: _selectAll,
+                  onClear: _deselectAll,
+                  itemName: 'items',
+                ),
                 if (_items.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
@@ -337,6 +546,8 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
   }
 
   Widget _buildItemCard(_ArchiveItem item, ColorScheme cs) {
+    final isSelected = _selectedIds.contains(item.id);
+
     return SwipeActionTile(
       isArchived: true,
       onAction: (action) {
@@ -361,102 +572,134 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
       },
       child: Card(
         margin: const EdgeInsets.symmetric(vertical: 4),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Row(
-            children: [
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: item.isPassword
-                      ? cs.tertiaryContainer.withValues(alpha: 0.3)
-                      : cs.primaryContainer.withValues(alpha: 0.3),
-                  borderRadius: BorderRadius.circular(10),
+        color: isSelected ? cs.primaryContainer.withValues(alpha: 0.7) : null,
+        child: InkWell(
+          onTap: () {
+            if (_isMultiSelect) {
+              _toggleSelect(item.id);
+            } else {
+              if (item.isPassword && item.passwordEntry != null) {
+                _openPassword(item.passwordEntry!);
+              } else if (item.note != null) {
+                _openNote(item.note!);
+              }
+            }
+          },
+          onLongPress: () {
+            HapticFeedback.heavyImpact();
+            _toggleSelect(item.id);
+          },
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: isSelected 
+                        ? cs.primary 
+                        : (item.isPassword
+                          ? cs.tertiaryContainer.withValues(alpha: 0.3)
+                          : cs.primaryContainer.withValues(alpha: 0.3)),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(
+                    isSelected ? Icons.check : (item.isPassword ? Icons.lock : Icons.description),
+                    color: isSelected ? cs.onPrimary : (item.isPassword ? cs.tertiary : cs.primary),
+                    size: 20,
+                  ),
                 ),
-                child: Icon(
-                  item.isPassword ? Icons.lock : Icons.description,
-                  color: item.isPassword ? cs.tertiary : cs.primary,
-                  size: 20,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      item.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w600,
-                        fontSize: 15,
-                      ),
-                    ),
-                    if (item.subtitle.isNotEmpty)
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                       Text(
-                        item.subtitle,
+                        item.title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: 12,
-                          color: cs.onSurface.withValues(alpha: 0.5),
+                          fontWeight: FontWeight.w600,
+                          fontSize: 15,
+                          color: isSelected ? cs.onPrimaryContainer : null,
                         ),
                       ),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        _ArchiveTypeBadge(type: item.type, cs: cs),
-                        const SizedBox(width: 8),
+                      if (item.subtitle.isNotEmpty)
                         Text(
-                          _formatDate(item.archivedAt),
+                          item.subtitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: TextStyle(
-                            fontSize: 11,
-                            color: cs.onSurface.withValues(alpha: 0.4),
+                            fontSize: 12,
+                            color: isSelected 
+                                ? cs.onPrimaryContainer.withValues(alpha: 0.6)
+                                : cs.onSurface.withValues(alpha: 0.5),
                           ),
                         ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              IconButton(
-                icon: Icon(Icons.unarchive, color: cs.primary),
-                tooltip: 'Restore',
-                onPressed: () {
-                  if (item.isPassword && item.passwordEntry != null) {
-                    _restorePassword(item.passwordEntry!);
-                  } else if (item.note != null) {
-                    _restoreNote(item.note!);
-                  }
-                },
-              ),
-              PopupMenuButton<String>(
-                onSelected: (v) {
-                  if (v == 'delete') {
-                    if (item.isPassword && item.passwordEntry != null) {
-                      _deletePassword(item.passwordEntry!);
-                    } else if (item.note != null) {
-                      _deleteNote(item.note!);
-                    }
-                  }
-                },
-                itemBuilder: (_) => [
-                  const PopupMenuItem(
-                    value: 'delete',
-                    child: ListTile(
-                      leading: Icon(Icons.delete_forever, color: Colors.red),
-                      title: Text(
-                        'Delete permanently',
-                        style: TextStyle(color: Colors.red),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          _ArchiveTypeBadge(type: item.type, cs: cs, isSelected: isSelected),
+                          const SizedBox(width: 8),
+                          Text(
+                            _formatDate(item.archivedAt),
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: isSelected 
+                                  ? cs.onPrimaryContainer.withValues(alpha: 0.6)
+                                  : cs.onSurface.withValues(alpha: 0.4),
+                            ),
+                          ),
+                        ],
                       ),
-                      dense: true,
-                    ),
+                    ],
                   ),
-                ],
-              ),
-            ],
+                ),
+                if (!_isMultiSelect) ...[
+                  IconButton(
+                    icon: Icon(Icons.unarchive, color: cs.primary),
+                    tooltip: 'Restore',
+                    onPressed: () {
+                      if (item.isPassword && item.passwordEntry != null) {
+                        _restorePassword(item.passwordEntry!);
+                      } else if (item.note != null) {
+                        _restoreNote(item.note!);
+                      }
+                    },
+                  ),
+                  PopupMenuButton<String>(
+                    onSelected: (v) {
+                      if (v == 'delete') {
+                        if (item.isPassword && item.passwordEntry != null) {
+                          _deletePassword(item.passwordEntry!);
+                        } else if (item.note != null) {
+                          _deleteNote(item.note!);
+                        }
+                      }
+                    },
+                    itemBuilder: (_) => [
+                      const PopupMenuItem(
+                        value: 'delete',
+                        child: ListTile(
+                          leading: Icon(Icons.delete_forever, color: Colors.red),
+                          title: Text(
+                            'Delete permanently',
+                            style: TextStyle(color: Colors.red),
+                          ),
+                          dense: true,
+                        ),
+                      ),
+                    ],
+                  ),
+                ] else
+                  Checkbox(
+                    value: isSelected,
+                    onChanged: (_) => _toggleSelect(item.id),
+                  ),
+              ],
+            ),
           ),
         ),
       ),
@@ -474,23 +717,26 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
 }
 
 class _ArchiveTypeBadge extends StatelessWidget {
-  const _ArchiveTypeBadge({required this.type, required this.cs});
+  const _ArchiveTypeBadge({required this.type, required this.cs, this.isSelected = false});
   final String type;
   final ColorScheme cs;
+  final bool isSelected;
 
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest.withValues(alpha: 0.4),
+        color: isSelected 
+            ? cs.onPrimaryContainer.withValues(alpha: 0.1)
+            : cs.surfaceContainerHighest.withValues(alpha: 0.4),
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(
         type == 'password' ? 'Password' : type,
         style: TextStyle(
           fontSize: 11,
-          color: cs.onSurface.withValues(alpha: 0.6),
+          color: isSelected ? cs.onPrimaryContainer : cs.onSurface.withValues(alpha: 0.6),
         ),
       ),
     );

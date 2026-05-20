@@ -23,10 +23,14 @@ import android.util.Base64
 class MainActivity : FlutterFragmentActivity() {
     private val keyAlias = "vaultx_device_bound_key"
     private var volumeChannel: MethodChannel? = null
+    private var megaManager: MegaManager? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         volumeChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "vaultx/volume_keys")
+        megaManager = MegaManager.getInstance(this).also { manager ->
+            manager.setupChannel(flutterEngine)
+        }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "vaultx/security").setMethodCallHandler { call, result ->
             when (call.method) {
                 "enableSecureWindow" -> {
@@ -169,5 +173,10 @@ class MainActivity : FlutterFragmentActivity() {
             }
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    override fun onDestroy() {
+        megaManager?.onDestroy()
+        super.onDestroy()
     }
 }

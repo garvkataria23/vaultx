@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 
 import '../models/auth.dart';
 import '../models/backup.dart';
+import '../services/cloud_storage_provider.dart';
+import '../services/format_utils.dart';
 import '../services/services.dart';
 
 /// Restore screen that handles the complete restore flow:
@@ -30,7 +32,7 @@ class RestoreScreen extends StatefulWidget {
   });
 
   final VaultAuthService authService;
-  final GoogleDriveBackupService driveService;
+  final CloudStorageProvider driveService;
   final Uint8List masterKey;
   final VaultKind kind;
   final bool autoRestore;
@@ -148,7 +150,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
     }
 
     if (_passwordCtrl.text.isEmpty) {
-      setState(() => _error = 'Enter your vault password to restore.');
+      if (mounted) setState(() => _error = 'Enter your vault password to restore.');
       return;
     }
 
@@ -156,24 +158,28 @@ class _RestoreScreenState extends State<RestoreScreen> {
       debugPrint(
         'RESTORE UI: _startRestore blocked — _detectedVersion is null',
       );
-      setState(() => _error = 'No backup version detected. Go back and retry.');
+      if (mounted) setState(() => _error = 'No backup version detected. Go back and retry.');
       return;
     }
 
     final version = _detectedVersion;
     if (version == null) {
-      setState(() {
-        _view = _RestoreView.detecting;
-        _error = 'No backup version detected.';
-      });
+      if (mounted) {
+        setState(() {
+          _view = _RestoreView.detecting;
+          _error = 'No backup version detected.';
+        });
+      }
       return;
     }
 
-    setState(() {
-      _busy = true;
-      _error = null;
-      _view = _RestoreView.restoring;
-    });
+    if (mounted) {
+      setState(() {
+        _busy = true;
+        _error = null;
+        _view = _RestoreView.restoring;
+      });
+    }
 
     try {
       debugPrint(
@@ -225,10 +231,6 @@ class _RestoreScreenState extends State<RestoreScreen> {
 
       // If local data exists, show conflict resolution
       if (_hasLocalData) {
-        if (!mounted) return;
-        debugPrint(
-          'RESTORE UI: local data conflict detected — showing conflict view',
-        );
         setState(() {
           _view = _RestoreView.conflict;
           _busy = false;
@@ -269,11 +271,13 @@ class _RestoreScreenState extends State<RestoreScreen> {
 
     _committing = true;
 
-    setState(() {
-      _view = _RestoreView.restoring;
-      _busy = true;
-      _error = null;
-    });
+    if (mounted) {
+      setState(() {
+        _view = _RestoreView.restoring;
+        _busy = true;
+        _error = null;
+      });
+    }
 
     try {
       debugPrint('RESTORE UI: calling commitRestore...');
@@ -326,7 +330,11 @@ class _RestoreScreenState extends State<RestoreScreen> {
       }
     } finally {
       // Always reset _committing so the user can retry.
-      _committing = false;
+      if (mounted) {
+        setState(() {
+          _committing = false;
+        });
+      }
       debugPrint('RESTORE UI: _committing reset to false');
     }
   }
@@ -336,17 +344,17 @@ class _RestoreScreenState extends State<RestoreScreen> {
     if (_restoreInfo != null) {
       _restoreService.cancelRestore(_restoreInfo!);
     }
-    Navigator.of(context).pop();
+    if (mounted) Navigator.of(context).pop();
   }
 
   void _skip() {
     debugPrint('RESTORE UI: _skip called');
-    Navigator.of(context).pop('skip');
+    if (mounted) Navigator.of(context).pop('skip');
   }
 
   void _later() {
     debugPrint('RESTORE UI: _later called');
-    Navigator.of(context).pop('later');
+    if (mounted) Navigator.of(context).pop('later');
   }
 
   // ── Build ────────────────────────────────────────────────────────────────
@@ -393,7 +401,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
           ),
           const SizedBox(height: 20),
           Text(
-            'Checking Google Drive for backup...',
+            'Checking ${widget.driveService.providerName} for backup...',
             style: Theme.of(context).textTheme.bodyLarge,
           ),
           const SizedBox(height: 8),
@@ -423,8 +431,8 @@ class _RestoreScreenState extends State<RestoreScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'No VaultX backup was found on your Google Drive account.\n\n'
-              'Create a backup from Settings → Backup & Security first.',
+              'No VaultX backup was found on your ${widget.driveService.providerName} account.\n\n'
+              'Create a backup from the Settings screen first.',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: cs.onSurfaceVariant,
@@ -475,7 +483,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
         ),
         const SizedBox(height: 8),
         Text(
-          'An existing VaultX backup was found on your Google Drive.',
+          'An existing VaultX backup was found on your ${widget.driveService.providerName}.',
           textAlign: TextAlign.center,
           style: TextStyle(
             color: cs.onSurfaceVariant,
@@ -835,22 +843,22 @@ class _RestoreScreenState extends State<RestoreScreen> {
                     _countRow(
                       Icons.description,
                       'Notes',
-                      _restoreInfo!.mainNoteCount,
+                      _restoreResult?.mainNotesRestored ?? _restoreInfo!.mainNoteCount,
                     ),
                     _countRow(
                       Icons.visibility_off,
                       'Hidden',
-                      _restoreInfo!.hiddenNoteCount,
+                      _restoreResult?.hiddenNotesRestored ?? _restoreInfo!.hiddenNoteCount,
                     ),
                     _countRow(
                       Icons.folder,
                       'Drive files',
-                      _restoreInfo!.driveFileCount,
+                      _restoreResult?.driveFilesRestored ?? _restoreInfo!.driveFileCount,
                     ),
                     _countRow(
                       Icons.key,
                       'Passwords',
-                      _restoreInfo!.passwordEntryCount,
+                      _restoreResult?.passwordEntriesRestored ?? _restoreInfo!.passwordEntryCount,
                     ),
                   ],
                 ),
@@ -960,7 +968,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
           children: [
             _infoRow(Icons.calendar_today, 'Backup date', v.label),
             const SizedBox(height: 4),
-            _infoRow(Icons.storage, 'Size', _formatBytes(v.totalSizeBytes)),
+            _infoRow(Icons.storage, 'Size', formatBytes(v.totalSizeBytes)),
             const SizedBox(height: 4),
             _infoRow(
               Icons.phonelink,
@@ -1053,11 +1061,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
     );
   }
 
-  String _formatBytes(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1048576) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    return '${(bytes / 1048576).toStringAsFixed(1)} MB';
-  }
+
 }
 
 enum _RestoreView {

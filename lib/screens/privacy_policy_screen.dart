@@ -14,7 +14,7 @@ When enabled, VaultX uploads only AES-256-GCM encrypted backup files to your Goo
 Data stored on device:
 - Encrypted notes and note metadata
 - Encrypted file attachments and voice recordings
-- Encrypted local backup files when exported by the user
+- Encrypted vault export files when exported by the user
 - Local security settings and activity logs
 - Intruder detection logs and encrypted selfie evidence when enabled by failed PIN attempts
 
@@ -31,7 +31,7 @@ Permissions:
 - Google Sign-In is used only when the user explicitly enables Google Drive backup.
 
 User control:
-- Users can export encrypted local backups.
+- Users can export encrypted vault backups as ZIP files.
 - Users can upload encrypted backups to their own Google Drive.
 - Users can wipe all VaultX data from the device.
 - Self-destruct and dead-man-switch style features must remain optional and disabled unless explicitly enabled.

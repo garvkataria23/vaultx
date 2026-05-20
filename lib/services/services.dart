@@ -22,6 +22,8 @@ export 'floating_notification_service.dart'
         AppNotificationType,
         AppNotificationX;
 export 'google_drive_backup.dart' show GoogleDriveBackupService;
+export 'mega_backup_service.dart' show MEGABackupService;
+export 'mega_sdk_service.dart' show MegaSdkService;
 export 'intruder_service.dart' show IntruderSelfieService, IntruderLogEntry;
 export 'item_action_service.dart' show ItemActionService;
 export 'share_service.dart' show ShareService;
@@ -45,3 +47,13 @@ export 'conversion_service.dart' show ConversionService, ConversionResult, Conve
 export 'pdf_tools_service.dart' show PdfToolsService;
 export 'temp_file_manager.dart' show TempFileManager;
 export 'note_import_service.dart' show NoteImportService, ImportProgressCallback, ImportStage, ImportStats;
+export 'smart_organization_service.dart' show SmartOrganizationService, CategoryMetadata;
+export 'backup_manager.dart' show BackupManager;
+export 'link_resolver.dart' show LinkResolver;
+export 'search_index_service.dart' show SearchIndexService;
+export 'note_export_service.dart' show NoteExportService, ExportFormat;
+export 'full_export_service.dart' show FullExportService;
+export 'transcription_service.dart' show TranscriptionService;
+export 'share_package_service.dart' show SharePackageService;
+export 'summarization_service.dart' show SummarizationService;
+export 'trash_service.dart' show TrashService, TrashItem;

@@ -1,14 +1,12 @@
 
-import 'dart:math';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vaultx/models/models.dart';
-import 'package:vaultx/screens/graph_view_screen.dart';
 
 // We can't easily test the private state of the widget without some refactoring,
 // but we can at least check if the connection logic (which is simple) works.
 
 void main() {
-  test('Graph connection logic test', () {
+  test('Smart Organization connection logic test', () {
     final now = DateTime.now();
     final note1 = SecureNote(
       id: '1',

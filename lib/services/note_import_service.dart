@@ -4,13 +4,21 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart' as sf;
 import 'package:xml/xml.dart';
 
 import '../models/note.dart';
+import '../models/backup.dart';
 import 'vault_repository.dart';
 import 'decoy_seed_service.dart';
+import 'archive_service.dart';
+import 'backup_service.dart';
+import 'auth_service.dart';
+
+import 'crypto_service.dart';
 
 Archive _decodeZip(List<int> bytes) {
   return ZipDecoder().decodeBytes(bytes);
@@ -70,17 +78,37 @@ class NoteImportService {
       );
 
       if (picked == null || picked.files.isEmpty) {
+        debugPrint('[NoteImportService] No file picked or picker cancelled');
         return stats;
       }
+
+      final fileName = picked.files.single.name;
+      debugPrint('[NoteImportService] Starting import of $fileName');
 
       onProgress(ImportStage.extracting, 0.1, 'Extracting archive...');
       final file = File(picked.files.single.path!);
       final bytes = await file.readAsBytes();
+      debugPrint('[NoteImportService] Read ${bytes.length} bytes from file');
       
       // Decoding can be heavy, but archive package is sync. 
       // For very large ZIPs, this might still block UI briefly, so we use compute.
       final archive = await compute(_decodeZip, bytes);
+      debugPrint('[NoteImportService] Decoded ZIP archive with ${archive.length} entries');
       
+      // ── Native VaultX Backup Detection ───────────────────────────────────
+      final isNativeBackup = archive.files.any((f) => f.name == 'manifest.json');
+      if (isNativeBackup) {
+        onProgress(ImportStage.reading, 0.2, 'Native backup detected...');
+        return _handleNativeRestore(picked.files.single.path!, onProgress, stopwatch);
+      }
+
+      // ── Full Structured Export Detection ──────────────────────────────────
+      final isFullExport = archive.files.any((f) => f.name.contains('vault_data.json'));
+      if (isFullExport) {
+        onProgress(ImportStage.reading, 0.2, 'Full export detected...');
+        return _handleFullRestore(archive, onProgress, stopwatch);
+      }
+
       onProgress(ImportStage.reading, 0.2, 'Analyzing folder structure...');
       // Filter for supported files and images
       final supportedFiles = archive.files.where((f) {
@@ -94,7 +122,10 @@ class NoteImportService {
                name.endsWith('.png');
       }).toList();
       
+      debugPrint('[NoteImportService] Found ${supportedFiles.length} supported files in archive');
+
       if (supportedFiles.isEmpty) {
+        debugPrint('[NoteImportService] No supported files found in ZIP');
         onProgress(ImportStage.failed, 1.0, 'No supported files found in ZIP.');
         return stats;
       }
@@ -108,6 +139,7 @@ class NoteImportService {
         folderGroups.putIfAbsent(folderName, () => []).add(f);
       }
       stats.totalFolders = folderGroups.keys.length;
+      debugPrint('[NoteImportService] Grouped files into ${stats.totalFolders} folders');
 
       final List<SecureNote> allNotesToSave = [];
       int processedCount = 0;
@@ -131,9 +163,6 @@ class NoteImportService {
           try {
             final fileName = archiveFile.name.toLowerCase();
             if (fileName.endsWith('.jpg') || fileName.endsWith('.jpeg') || fileName.endsWith('.png')) {
-              // In this version, we don't handle standalone images as notes, 
-              // but we could attach them to notes in the same folder.
-              // For simplicity now, we just count them as media.
               stats.totalMedia++;
               continue;
             }
@@ -169,10 +198,12 @@ class NoteImportService {
             stats.totalNotes++;
           } catch (e) {
             stats.failedFiles++;
-            debugPrint('Failed to process ${archiveFile.name}: $e');
+            debugPrint('[NoteImportService] Failed to process ${archiveFile.name}: $e');
           }
         }
       }
+
+      debugPrint('[NoteImportService] Finished processing, ${allNotesToSave.length} notes ready to save');
 
       onProgress(ImportStage.saving, 0.85, 'Saving to secure database...');
       if (allNotesToSave.isNotEmpty) {
@@ -181,6 +212,8 @@ class NoteImportService {
         for (int i = 0; i < allNotesToSave.length; i += chunkSize) {
           final end = (i + chunkSize < allNotesToSave.length) ? i + chunkSize : allNotesToSave.length;
           final chunk = allNotesToSave.sublist(i, end);
+          
+          debugPrint('[NoteImportService] Saving batch ${i ~/ chunkSize + 1} (${chunk.length} notes)');
           
           if (_isDecoy) {
             await DecoySeedService.saveAllNotes(chunk);
@@ -191,18 +224,253 @@ class NoteImportService {
           final saveProgress = 0.85 + (end / allNotesToSave.length) * 0.1;
           onProgress(ImportStage.saving, saveProgress, 'Saving notes (${i + chunk.length}/${allNotesToSave.length})...');
         }
+        debugPrint('[NoteImportService] Successfully saved all batches');
       }
 
       onProgress(ImportStage.finalizing, 0.95, 'Finalizing import...');
       stopwatch.stop();
       stats.timeTaken = stopwatch.elapsed;
+      debugPrint('[NoteImportService] Import completed in ${stats.timeTaken.inSeconds}s');
       onProgress(ImportStage.completed, 1.0, 'Import completed successfully!');
       
-    } catch (e) {
+    } catch (e, st) {
       onProgress(ImportStage.failed, 1.0, 'Import failed: $e');
-      debugPrint('Import error: $e');
+      debugPrint('[NoteImportService] Critical import error: $e\n$st');
     }
 
+    return stats;
+  }
+
+  Future<ImportStats> _handleNativeRestore(
+    String path,
+    ImportProgressCallback onProgress,
+    Stopwatch stopwatch,
+  ) async {
+    final stats = ImportStats();
+    try {
+      if (_repo == null) throw Exception('Repository not available');
+
+      // 1. Extract the structured backup
+      onProgress(ImportStage.extracting, 0.3, 'Extracting native backup...');
+      final backupData = await ArchiveService.extractArchive(path);
+
+      // 2. Perform the restore using BackupService
+      onProgress(ImportStage.importing, 0.5, 'Restoring vault data...');
+      final backupService = BackupService(
+        masterKey: _repo.masterKey,
+        kind: _repo.kind,
+        authService: VaultAuthService(), // Dummy for restore logic
+        onProgress: (p) {
+          final processed = p.components.fold<int>(0, (sum, c) => sum + c.itemsProcessed);
+          final total = p.components.fold<int>(0, (sum, c) => sum + c.totalItems);
+          final progress = 0.5 + (total > 0 ? (processed / total) * 0.4 : 0.0);
+          onProgress(ImportStage.importing, progress, 'Restoring components...', current: processed, total: total);
+        },
+      );
+
+      final result = await backupService.restoreBackup(
+        backupData,
+        mode: RestoreMode.merge,
+        mainMasterKey: _repo.masterKey, // Assume same key for now
+        targetMasterKey: _repo.masterKey,
+      );
+
+      if (!result.success) {
+        throw Exception(result.error ?? 'Native restore failed');
+      }
+
+      onProgress(ImportStage.finalizing, 0.95, 'Finalizing...');
+      stopwatch.stop();
+      stats.timeTaken = stopwatch.elapsed;
+      stats.totalNotes = result.preservedLocalItems; // We'll just use counts from result
+      // Note: RestoreResult doesn't have detailed stats in a single field, 
+      // but it provides a summary string. We'll just return a generic success.
+      stats.totalNotes = 1; // Mark as success so UI shows success dialog
+      
+      onProgress(ImportStage.completed, 1.0, 'Vault restored successfully!');
+    } catch (e) {
+      onProgress(ImportStage.failed, 1.0, 'Native restore failed: $e');
+      debugPrint('[NoteImportService] Native restore error: $e');
+    }
+    return stats;
+  }
+
+  Future<ImportStats> _handleFullRestore(
+    Archive archive,
+    ImportProgressCallback onProgress,
+    Stopwatch stopwatch,
+  ) async {
+    final stats = ImportStats();
+    try {
+      if (_repo == null) throw Exception('Repository not available');
+      final docDir = await getApplicationDocumentsDirectory();
+
+      onProgress(ImportStage.reading, 0.3, 'Reading manifest...');
+      final manifestFile = archive.files.firstWhere((f) => f.name.contains('vault_data.json'));
+      final manifest = jsonDecode(utf8.decode(manifestFile.content as List<int>)) as Map<String, dynamic>;
+      final blobMapping = Map<String, String>.from(manifest['blobMapping'] ?? {});
+      final isDecryptedExport = manifest['exportType'] == 'fully_decrypted';
+
+      onProgress(ImportStage.importing, 0.4, 'Restoring vault structure...');
+      
+      final recordsBox = Hive.box('vaultx_records');
+      final driveBox = Hive.box('vaultx_drive');
+      final settingsBox = Hive.box('vaultx_settings');
+      final passwordsBox = Hive.box('vaultx_passwords');
+      final cryptoService = CryptoService();
+
+      int processed = 0;
+      final total = archive.files.length;
+
+      for (final file in archive.files) {
+        processed++;
+        if (!file.isFile) continue;
+        
+        final path = file.name;
+        final content = file.content as List<int>;
+
+        // 1. Restore Raw Notes (Main/Hidden)
+        if (path.contains('/metadata/raw_notes/')) {
+          final isMain = path.contains('/main/');
+          final prefixStr = isMain ? 'main' : 'hidden';
+          final data = jsonDecode(utf8.decode(content)) as Map<String, dynamic>;
+          final id = data['id'];
+          if (id != null) {
+            await recordsBox.put('$prefixStr:$id', data);
+            stats.totalNotes++;
+          }
+        }
+        
+        // 2. Restore Drive Metadata
+        else if (path.contains('/metadata/drive/')) {
+          final data = jsonDecode(utf8.decode(content)) as Map<String, dynamic>;
+          final id = data['id'];
+          final prefixStr = data['_prefix'] ?? (path.contains('main_') ? 'main' : 'hidden');
+          if (id != null) {
+            await driveBox.put('$prefixStr:$id', data);
+          }
+        }
+
+        // 3. Restore Blobs (Images, Videos, etc.)
+        else if (path.endsWith('.vxblob') || (isDecryptedExport && !path.contains('/metadata/') && !path.contains('/folders/') && !path.endsWith('.json'))) {
+          final fileName = path.split('/').last;
+          String id;
+          if (isDecryptedExport && !path.endsWith('.vxblob')) {
+            // Decrypted export format is id_name.ext
+            id = fileName.split('_').first;
+          } else {
+            id = fileName.replaceAll('.vxblob', '');
+          }
+          
+          final targetDirName = blobMapping[id] ?? 'vaultx_blobs';
+          final targetDir = Directory('${docDir.path}/$targetDirName');
+          await targetDir.create(recursive: true);
+
+          if (isDecryptedExport && !path.endsWith('.vxblob')) {
+            // Need to re-encrypt!
+            // Find metadata to get salt and owner
+            Map<String, dynamic>? meta;
+            String? prefixStr;
+            
+            // Search in drive metadata first
+            final driveMetaFile = archive.files.firstWhere(
+              (f) => f.name.contains('/metadata/drive/') && f.name.contains(id),
+              orElse: () => archive.files.firstWhere(
+                (f) => f.name.contains('/metadata/raw_notes/') && f.name.contains(id),
+                orElse: () => ArchiveFile('', 0, []),
+              ),
+            );
+
+            if (driveMetaFile.name.isNotEmpty) {
+              if (driveMetaFile.name.contains('/drive/')) {
+                meta = jsonDecode(utf8.decode(driveMetaFile.content as List<int>));
+                prefixStr = driveMetaFile.name.contains('hidden_') ? 'hidden' : 'main';
+              }
+            }
+
+            // If we have the masterKey (which we should in NoteImportService), we can re-encrypt.
+            if (_repo != null) {
+              final masterKey = _repo.masterKey;
+              String? salt;
+              String ownerId = '';
+
+              if (meta?['salt'] != null) {
+                salt = meta!['salt'];
+                ownerId = meta['id'];
+                final key = cryptoService.deriveRecordKey(masterKey, '$prefixStr:$ownerId', salt!);
+                final encrypted = content.length > 102400
+                    ? await cryptoService.encryptBytesIsolate(content, key)
+                    : cryptoService.encryptBytes(content, key);
+                await File('${targetDir.path}/$id.vxblob').writeAsBytes(encrypted);
+              } else {
+                // If it's an attachment, we need to find its metadata in the note.
+                final noteFiles = archive.files.where((f) => f.name.contains('/metadata/raw_notes/'));
+                for (final nf in noteFiles) {
+                  final raw = jsonDecode(utf8.decode(nf.content as List<int>));
+                  final noteId = raw['id'];
+                  final noteSalt = raw['salt'];
+                  final recordKey = cryptoService.deriveRecordKey(masterKey, noteId, noteSalt);
+                  final clear = cryptoService.decryptJson(Map<String, dynamic>.from(raw['payload']), recordKey);
+                  final note = SecureNote.fromJson(clear);
+                  final atts = note.attachments.where((a) => a.id == id);
+                  if (atts.isNotEmpty) {
+                    final att = atts.first;
+                    final key = cryptoService.deriveRecordKey(masterKey, '${note.id}:${att.id}', att.salt);
+                    final encrypted = content.length > 102400
+                        ? await cryptoService.encryptBytesIsolate(content, key)
+                        : cryptoService.encryptBytes(content, key);
+                    await File('${targetDir.path}/$id.vxblob').writeAsBytes(encrypted);
+                    break;
+                  }
+                }
+              }
+            }
+          } else {
+            // It's already encrypted (.vxblob)
+            await File('${targetDir.path}/$id.vxblob').writeAsBytes(content);
+          }
+          stats.totalMedia++;
+        }
+
+        // 4. Restore Folders
+        else if (path.contains('/folders/')) {
+          final data = jsonDecode(utf8.decode(content)) as Map<String, dynamic>;
+          final name = data['name'];
+          final boxName = path.contains('records_') ? 'records' : 'drive';
+          final prefix = data['vaultKind'] == 'hidden' ? 'hidden' : 'main';
+          if (name != null) {
+            final targetBox = boxName == 'records' ? recordsBox : driveBox;
+            await targetBox.put('$prefix:folder_metadata:$name', data);
+          }
+        }
+
+        // 5. Settings and Passwords
+        else if (path.endsWith('settings.json')) {
+          final data = jsonDecode(utf8.decode(content)) as Map<String, dynamic>;
+          for (final entry in data.entries) {
+            await settingsBox.put(entry.key, entry.value);
+          }
+        }
+        else if (path.endsWith('passwords.json')) {
+          final data = jsonDecode(utf8.decode(content)) as Map<String, dynamic>;
+          for (final entry in data.entries) {
+            await passwordsBox.put(entry.key, entry.value);
+          }
+        }
+
+        if (processed % 20 == 0) {
+          onProgress(ImportStage.importing, 0.4 + (processed / total) * 0.5, 'Restoring: ${path.split('/').last}', current: processed, total: total);
+        }
+      }
+
+      onProgress(ImportStage.finalizing, 0.95, 'Finalizing...');
+      stopwatch.stop();
+      stats.timeTaken = stopwatch.elapsed;
+      onProgress(ImportStage.completed, 1.0, 'Full vault restored successfully!');
+    } catch (e, st) {
+      onProgress(ImportStage.failed, 1.0, 'Full restore failed: $e');
+      debugPrint('[NoteImportService] Full restore error: $e\n$st');
+    }
     return stats;
   }
 

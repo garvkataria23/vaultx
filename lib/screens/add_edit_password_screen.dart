@@ -1,8 +1,9 @@
-import 'dart:math';
-
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../models/password_entry.dart';
+import '../services/floating_notification_service.dart';
+import '../services/password_generator.dart';
 import '../services/password_vault_service.dart';
 
 class AddEditPasswordScreen extends StatefulWidget {
@@ -31,7 +32,6 @@ class _AddEditPasswordScreenState extends State<AddEditPasswordScreen> {
   bool _passwordVisible = false;
   bool _confirmVisible = false;
   String? _error;
-  final _chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#%^&*()-_=+';
 
   @override
   void initState() {
@@ -57,54 +57,80 @@ class _AddEditPasswordScreenState extends State<AddEditPasswordScreen> {
     super.dispose();
   }
 
-  double get _strength {
-    final p = _passwordCtrl.text;
-    if (p.isEmpty) return 0;
-    var score = 0;
-    if (p.length >= 8) score += 20;
-    if (p.length >= 12) score += 15;
-    if (p.length >= 16) score += 10;
-    if (RegExp(r'[a-z]').hasMatch(p)) score += 10;
-    if (RegExp(r'[A-Z]').hasMatch(p)) score += 10;
-    if (RegExp(r'[0-9]').hasMatch(p)) score += 10;
-    if (RegExp(r'[!@#%^&*()\-_=+\[\]{}|;:,.<>?/~`]').hasMatch(p)) score += 15;
-    if (RegExp(r'^.{16,}$').hasMatch(p) &&
-        RegExp(r'[a-z]').hasMatch(p) &&
-        RegExp(r'[A-Z]').hasMatch(p) &&
-        RegExp(r'[0-9]').hasMatch(p) &&
-        RegExp(r'[!@#%^&*()\-_=+\[\]{}|;:,.<>?/~`]').hasMatch(p)) {
-      score += 10;
-    }
-    return (score / 100).clamp(0, 1);
+  int get _strengthScore => PasswordGenerator.strength(_passwordCtrl.text);
+
+  Color _strengthColor(int s) => PasswordGenerator.strengthColor(s);
+
+  String _strengthLabel(int s) => PasswordGenerator.strengthLabel(s);
+
+  void _showGenerateOptions() {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Generate Password', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 20),
+            ListTile(
+              leading: const Icon(Icons.password),
+              title: const Text('Random password (24 chars)'),
+              subtitle: const Text('Letters, digits, and symbols'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _applyGenerated(PasswordGenerator.generate());
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.password),
+              title: const Text('Random password (32 chars)'),
+              subtitle: const Text('Extra strong, all character types'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _applyGenerated(PasswordGenerator.generate(length: 32));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.text_fields),
+              title: const Text('Passphrase'),
+              subtitle: const Text('5 easy-to-remember words'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _applyGenerated(PasswordGenerator.generatePassphrase());
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.pin_outlined),
+              title: const Text('Numeric PIN (6 digits)'),
+              subtitle: const Text('For PIN-only logins'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _applyGenerated(PasswordGenerator.generatePin());
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.pin_outlined),
+              title: const Text('Numeric PIN (8 digits)'),
+              subtitle: const Text('Higher entropy numeric PIN'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _applyGenerated(PasswordGenerator.generatePin(length: 8));
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
-  Color _strengthColor(double s) {
-    if (s < 0.3) return Colors.red;
-    if (s < 0.6) return Colors.orange;
-    if (s < 0.8) return Colors.yellow.shade700;
-    return Colors.green;
-  }
-
-  String _strengthLabel(double s) {
-    if (s < 0.3) return 'Weak';
-    if (s < 0.6) return 'Fair';
-    if (s < 0.8) return 'Strong';
-    return 'Very Strong';
-  }
-
-  void _generatePassword() {
-    final rng = Random.secure();
-    final length = 20 + rng.nextInt(12);
-    final password = List.generate(length, (_) => _chars[rng.nextInt(_chars.length)]).join();
-    // Ensure at least one of each type
-    final guaranteed = [
-      'a', 'Z', '5', '!',
-    ];
-    final mixed = [password.substring(0, password.length - guaranteed.length), ...guaranteed].join();
-    final shuffled = String.fromCharCodes(mixed.runes.toList()..shuffle(rng));
-    _passwordCtrl.text = shuffled;
-    _confirmCtrl.text = shuffled;
+  void _applyGenerated(String password) {
+    _passwordCtrl.text = password;
+    _confirmCtrl.text = password;
+    Clipboard.setData(ClipboardData(text: password));
     setState(() {});
+    FloatingNotificationService.instance.show('Password copied to clipboard');
   }
 
   void _save() {
@@ -147,7 +173,7 @@ class _AddEditPasswordScreenState extends State<AddEditPasswordScreen> {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final isNew = widget.entry.serviceName.isEmpty;
-    final strength = _strength;
+    final strengthScore = _strengthScore;
 
     return Scaffold(
       resizeToAvoidBottomInset: true,
@@ -223,7 +249,7 @@ class _AddEditPasswordScreenState extends State<AddEditPasswordScreen> {
                     ),
                     IconButton(
                       icon: const Icon(Icons.shuffle, color: Colors.blue),
-                      onPressed: _generatePassword,
+                      onPressed: _showGenerateOptions,
                       tooltip: 'Generate strong password',
                     ),
                   ],
@@ -241,19 +267,19 @@ class _AddEditPasswordScreenState extends State<AddEditPasswordScreen> {
                   ClipRRect(
                     borderRadius: BorderRadius.circular(4),
                     child: LinearProgressIndicator(
-                      value: strength,
+                      value: (strengthScore + 1) / 5,
                       backgroundColor: cs.surfaceContainerHighest,
-                      color: _strengthColor(strength),
+                      color: _strengthColor(strengthScore),
                       minHeight: 6,
                     ),
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    _strengthLabel(strength),
+                    _strengthLabel(strengthScore),
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
-                      color: _strengthColor(strength),
+                      color: _strengthColor(strengthScore),
                     ),
                   ),
                 ],

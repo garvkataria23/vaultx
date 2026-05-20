@@ -1,6 +1,6 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'package:share_plus/share_plus.dart';
+import 'package:share_plus/share_plus.dart' as share;
 import '../models/note.dart';
 import '../models/drive_file.dart';
 import 'crypto_service.dart';
@@ -9,8 +9,23 @@ import 'package:path_provider/path_provider.dart';
 class ShareService {
   static Future<void> shareNote(SecureNote note) async {
     final text = '${note.title}\n\n${note.body}';
-    // ignore: deprecated_member_use
-    await Share.share(text, subject: note.title);
+    await share.SharePlus.instance.share(
+      share.ShareParams(text: text, subject: note.title),
+    );
+  }
+
+  static Future<void> shareFilePath(String filePath, {String? text}) async {
+    final file = File(filePath);
+    if (!await file.exists()) {
+      debugPrint('ShareService: File not found at $filePath');
+      return;
+    }
+    await share.SharePlus.instance.share(
+      share.ShareParams(
+        files: [share.XFile(filePath)],
+        text: text ?? filePath.split('\\').last.split('/').last,
+      ),
+    );
   }
 
   static Future<void> shareFile(
@@ -36,12 +51,14 @@ class ShareService {
       final tempFile = File('${tempDir.path}/${file.name}');
       await tempFile.writeAsBytes(decryptedBytes);
 
-      // ignore: deprecated_member_use
-      await Share.shareXFiles([XFile(tempFile.path)], text: file.name);
+      await share.SharePlus.instance.share(
+        share.ShareParams(
+          files: [share.XFile(tempFile.path)],
+          text: file.name,
+        ),
+      );
       
-      // Clean up after share - note: share sheet might still be using it, 
-      // but usually Share.shareXFiles returns when the sheet is shown or dismissed depending on platform.
-      // Better to cleanup after a short delay or just let it be in temp.
+      // Clean up after share
       Future.delayed(const Duration(minutes: 5), () async {
         if (await tempFile.exists()) await tempFile.delete();
       });

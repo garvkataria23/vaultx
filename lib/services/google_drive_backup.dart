@@ -1,117 +1,173 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
-import 'package:googleapis_auth/googleapis_auth.dart' as auth;
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
-
 import 'package:flutter/foundation.dart';
 
 import '../models/backup.dart';
-import 'archive_service.dart';
 import 'auth_service.dart';
-import 'backup_service.dart';
+import 'base_cloud_backup_provider.dart';
 
-const _kChunkSize = 4 * 1024 * 1024; // 4 MB per upload chunk
-const _kMaxInlineSize = 10 * 1024 * 1024; // 10 MB before splitting
-
-// Timeouts
 const _kDownloadTimeout = Duration(minutes: 10);
 const _kApiCallTimeout = Duration(seconds: 30);
 
-/// Google Drive encrypted backup service for VaultX.
-///
-/// All backups are encrypted locally before upload.
-/// Google Drive only stores ciphertext.
-///
-/// Uses appDataFolder so backups stay hidden from user's normal Drive UI.
-///
-/// Supports:
-/// - Chunked upload for large backups (>10MB split into parts)
-/// - Backup versioning (timestamped filenames for history)
-/// - Manifest-driven download (reassembles parts)
-/// - Resumable upload tracking for interrupted uploads
-/// - Post-upload integrity verification via SHA-256 stored in file description
-/// - Backup pruning (keeps N most recent)
-class GoogleDriveBackupService {
+/// An HTTP client that automatically attaches Google Sign-In authentication headers.
+/// This ensures tokens are refreshed by the google_sign_in plugin as needed.
+class AuthenticatedGoogleClient extends http.BaseClient {
+  final GoogleSignInAccount _account;
+  final http.Client _inner = http.Client();
+
+  AuthenticatedGoogleClient(this._account);
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    try {
+      debugPrint('GD_AUTH: Requesting authentication headers for ${request.url}');
+      final headers = await _account.authentication;
+      final accessToken = headers.accessToken;
+
+      if (accessToken == null) {
+        debugPrint('GD_AUTH_ERROR: Access token is null for ${_account.email}');
+        throw Exception('GD_AUTH: Failed to obtain access token from Google Sign-In');
+      }
+
+      request.headers['Authorization'] = 'Bearer $accessToken';
+      request.headers['X-Goog-AuthUser'] = '0'; // Standard header for Google APIs
+      
+      return _inner.send(request);
+    } catch (e, st) {
+      debugPrint('GD_AUTH_ERROR: Failed to attach auth headers: $e');
+      debugPrint('$st');
+      rethrow;
+    }
+  }
+
+  @override
+  void close() {
+    _inner.close();
+    super.close();
+  }
+}
+
+class GoogleDriveBackupService extends BaseCloudBackupProvider {
   GoogleDriveBackupService({this.masterKey, this.authService});
 
+  @override
   final Uint8List? masterKey;
+  @override
   final VaultAuthService? authService;
 
-  static const List<String> _scopes = [drive.DriveApi.driveAppdataScope];
-  static const String _backupPrefix = 'vaultx_backup_v2_';
+  static const List<String> _scopes = [
+    'email',
+    drive.DriveApi.driveAppdataScope,
+  ];
   static const String _keyTokenExpiry = 'gdriveTokenExpiry';
   static const String _keyEmail = 'gdriveEmail';
 
   GoogleSignIn? _googleSignIn;
-  auth.AuthClient? _authClient;
+  AuthenticatedGoogleClient? _authClient;
   drive.DriveApi? _driveApi;
   String? _cachedEmail;
   Future<bool>? _silentSignInFuture;
   Future<bool>? _interactiveSignInFuture;
 
-  /// Callback for upload progress (bytes uploaded, total bytes).
-  void Function(int uploadedBytes, int totalBytes)? onUploadProgress;
-
-  /// Whether the client is currently authenticated.
+  @override
   bool get isAuthenticated => _authClient != null && _driveApi != null;
 
-  /// Signed-in email — persisted across restarts via Hive.
-  String? get signedInEmail =>
-      _cachedEmail ??
-      _googleSignIn?.currentUser?.email ??
-      Hive.box('vaultx_settings').get(_keyEmail) as String?;
+  @override
+  String? get signedInEmail {
+    if (_cachedEmail != null) return _cachedEmail;
+    
+    final currentUserEmail = _googleSignIn?.currentUser?.email;
+    if (currentUserEmail != null && currentUserEmail.isNotEmpty) {
+      return currentUserEmail;
+    }
 
-  /// True if a token expiry exists in Hive and hasn't expired yet.
-  bool get hasValidSession {
-    final expiryRaw =
-        Hive.box('vaultx_settings').get(_keyTokenExpiry) as String?;
-    if (expiryRaw == null) return false;
-    final expiry = DateTime.tryParse(expiryRaw);
-    return expiry != null && DateTime.now().toUtc().isBefore(expiry);
+    final storedEmail = Hive.box('vaultx_settings').get(_keyEmail) as String?;
+    if (storedEmail != null && storedEmail.isNotEmpty) {
+      return storedEmail;
+    }
+
+    return null;
   }
 
-  /// Restore a previously authenticated session silently.
+  @override
+  String get providerName => 'Google Drive';
+
+  @override
+  CloudProvider get providerType => CloudProvider.googleDrive;
+
+  @override
+  String? get accountLabel => signedInEmail ?? 'Google Account';
+
+  @override
+  bool get hasValidSession {
+    // If we have an active client, session is valid.
+    if (isAuthenticated) return true;
+    
+    // Otherwise check stored email. If we have it, we can try silent sign-in.
+    final email = Hive.box('vaultx_settings').get(_keyEmail) as String?;
+    return email != null && email.isNotEmpty;
+  }
+
+  @override
   Future<String?> restoreSession() async {
-    if (isAuthenticated) return signedInEmail;
-
-    debugPrint('RESTORE SESSION: attempting silent sign-in...');
-    final success = await signInSilently();
-
-    if (success) {
-      debugPrint('RESTORE SESSION: success, email=$signedInEmail');
+    if (isAuthenticated) {
+      debugPrint('RESTORE SESSION: already authenticated as $signedInEmail');
       return signedInEmail;
+    }
+
+    debugPrint('RESTORE SESSION: checking if email is stored...');
+    final email = Hive.box('vaultx_settings').get(_keyEmail) as String?;
+    if (email == null || email.isEmpty) {
+      debugPrint('RESTORE SESSION: no stored email, skipping silent sign-in');
+      return null;
+    }
+
+    debugPrint('RESTORE SESSION: attempting silent sign-in for $email...');
+    try {
+      final success = await signInSilently();
+      if (success) {
+        debugPrint('RESTORE SESSION: success, email=$signedInEmail');
+        return signedInEmail;
+      }
+    } catch (e) {
+      debugPrint('RESTORE SESSION: silent sign-in failed: $e');
     }
 
     debugPrint('RESTORE SESSION: silent sign-in failed');
     return null;
   }
 
-  /// Central auth guard used by all API methods.
-  /// On failure, clears stale credentials so callers get a clean state.
-  Future<bool> _ensureAuthenticated() async {
+  @override
+  Future<bool> ensureAuthenticated() async {
     if (isAuthenticated) return true;
     debugPrint('ENSURE AUTH: not authenticated, trying silent sign-in...');
-    final restored = await signInSilently();
-    if (restored) {
-      debugPrint('ENSURE AUTH: restored via silent sign-in');
-      return true;
+    try {
+      final restored = await signInSilently();
+      if (restored) {
+        debugPrint('ENSURE AUTH: restored via silent sign-in');
+        return true;
+      }
+    } catch (e) {
+      debugPrint('ENSURE AUTH: silent sign-in exception: $e');
     }
     debugPrint('ENSURE AUTH: failed — user must sign in interactively');
     return false;
   }
 
-  // ── Sign-in ──────────────────────────────────────────────────────────────
-
-  /// Silent sign-in using cached Google session.
+  @override
   Future<bool> signInSilently() async {
-    if (_silentSignInFuture != null) return _silentSignInFuture!;
+    if (_silentSignInFuture != null) {
+      debugPrint('GD_AUTH: silent sign-in already in progress, awaiting...');
+      return _silentSignInFuture!;
+    }
     _silentSignInFuture = _signInSilently();
     try {
       return await _silentSignInFuture!;
@@ -122,58 +178,58 @@ class GoogleDriveBackupService {
 
   Future<bool> _signInSilently() async {
     try {
-      debugPrint('SILENT SIGN IN: starting...');
+      debugPrint('GD_AUTH: Starting silent sign-in attempt...');
 
-      _googleSignIn ??= GoogleSignIn(scopes: _scopes);
-
-      GoogleSignInAccount? account = await _googleSignIn!.signInSilently();
-      account ??= _googleSignIn!.currentUser;
-
-      if (account == null) {
-        debugPrint('SILENT SIGN IN: no cached account found');
-        return false;
-      }
-
-      _cachedEmail = account.email;
-      await Hive.box('vaultx_settings').put(_keyEmail, account.email);
-
-      final authHeaders = await account.authentication;
-      final accessToken = authHeaders.accessToken;
-
-      if (accessToken == null) {
-        debugPrint('SILENT SIGN IN: access token is null');
-        return false;
-      }
-
-      final expiry = DateTime.now().toUtc().add(const Duration(minutes: 55));
-
-      _authClient = auth.authenticatedClient(
-        http.Client(),
-        auth.AccessCredentials(
-          auth.AccessToken('Bearer', accessToken, expiry),
-          authHeaders.idToken,
-          _scopes,
-        ),
+      _googleSignIn ??= GoogleSignIn(
+        scopes: _scopes,
       );
 
-      _driveApi = drive.DriveApi(_authClient!);
+      GoogleSignInAccount? account = await _googleSignIn!.signInSilently();
+      
+      if (account == null) {
+        debugPrint('GD_AUTH: signInSilently() returned null, checking currentUser...');
+        account = _googleSignIn!.currentUser;
+      }
 
+      if (account == null) {
+        debugPrint('GD_AUTH: No account available after silent attempt');
+        return false;
+      }
+
+      final email = account.email;
+      if (email.isEmpty) {
+        debugPrint('GD_AUTH_ERROR: Account found but email is empty');
+        return false;
+      }
+
+      debugPrint('GD_AUTH: Silent sign-in successful for $email');
+      
+      _cachedEmail = email;
+      await Hive.box('vaultx_settings').put(_keyEmail, email);
+
+      _authClient = AuthenticatedGoogleClient(account);
+      _driveApi = drive.DriveApi(_authClient!);
+      debugPrint('GD_AUTH: DriveApi initialized for $email');
+
+      final expiry = DateTime.now().toUtc().add(const Duration(minutes: 55));
       await Hive.box(
         'vaultx_settings',
       ).put(_keyTokenExpiry, expiry.toIso8601String());
 
-      debugPrint('SILENT SIGN IN: success, email=${account.email}');
       return true;
     } catch (e, st) {
-      debugPrint('SILENT SIGN IN ERROR: $e');
-      debugPrint('$st');
+      debugPrint('GD_AUTH_ERROR: Silent sign-in failed with exception: $e');
+      debugPrint('GD_AUTH_ERROR: Stack trace:\n$st');
       return false;
     }
   }
 
-  /// Interactive Google sign-in.
+  @override
   Future<bool> signIn() async {
-    if (_interactiveSignInFuture != null) return _interactiveSignInFuture!;
+    if (_interactiveSignInFuture != null) {
+      debugPrint('GD_AUTH: interactive sign-in already in progress, awaiting...');
+      return _interactiveSignInFuture!;
+    }
     _interactiveSignInFuture = _signIn();
     try {
       return await _interactiveSignInFuture!;
@@ -184,59 +240,80 @@ class GoogleDriveBackupService {
 
   Future<bool> _signIn() async {
     try {
-      debugPrint('INTERACTIVE SIGN IN: starting...');
+      debugPrint('GD_AUTH: Starting interactive sign-in...');
 
-      _googleSignIn ??= GoogleSignIn(scopes: _scopes);
+      _googleSignIn ??= GoogleSignIn(
+        scopes: _scopes,
+      );
+
+      // Disconnect first to clear stale state without full sign-out
+      try {
+        await _googleSignIn!.disconnect();
+      } catch (_) {}
 
       final account = await _googleSignIn!.signIn();
 
       if (account == null) {
-        debugPrint('INTERACTIVE SIGN IN: user cancelled');
+        debugPrint('GD_AUTH: Interactive sign-in returned null (cancelled)');
         return false;
       }
 
-      _cachedEmail = account.email;
-      await Hive.box('vaultx_settings').put(_keyEmail, account.email);
-
-      final authHeaders = await account.authentication;
-      final accessToken = authHeaders.accessToken;
-
-      if (accessToken == null) {
-        debugPrint('INTERACTIVE SIGN IN: access token is null');
-        return false;
+      final email = account.email;
+      if (email.isEmpty) {
+        throw Exception('Account found but email is empty. Check Google account settings.');
       }
+
+      debugPrint('GD_AUTH: Interactive sign-in successful for $email');
+      
+      _cachedEmail = email;
+      await Hive.box('vaultx_settings').put(_keyEmail, email);
+
+      _authClient = AuthenticatedGoogleClient(account);
+      _driveApi = drive.DriveApi(_authClient!);
+      debugPrint('GD_AUTH: DriveApi initialized for $email');
 
       final expiry = DateTime.now().toUtc().add(const Duration(minutes: 55));
-
-      _authClient = auth.authenticatedClient(
-        http.Client(),
-        auth.AccessCredentials(
-          auth.AccessToken('Bearer', accessToken, expiry),
-          authHeaders.idToken,
-          _scopes,
-        ),
-      );
-
-      _driveApi = drive.DriveApi(_authClient!);
-
       await Hive.box(
         'vaultx_settings',
       ).put(_keyTokenExpiry, expiry.toIso8601String());
 
-      debugPrint('INTERACTIVE SIGN IN: success, email=${account.email}');
       return true;
     } catch (e, st) {
-      debugPrint('INTERACTIVE SIGN IN ERROR: $e');
-      debugPrint('$st');
-      return false;
+      debugPrint('GD_AUTH_ERROR: Interactive sign-in failed: $e');
+      String userMessage = 'Google Sign-In failed.';
+      
+      if (e is PlatformException) {
+        debugPrint('GD_AUTH_ERROR: PlatformException code=${e.code}, message=${e.message}');
+        if (e.code == '10' || e.code == 'DEVELOPER_ERROR') {
+          userMessage = 'Configuration error (Developer Error 10). Check SHA-1 fingerprint and google-services.json.';
+        } else if (e.code == 'network_error') {
+          userMessage = 'Network error during Google Sign-In. Check your internet and try again.';
+        } else if (e.code == 'sign_in_cancelled') {
+          return false;
+        } else if (e.code == 'sign_in_failed') {
+          userMessage = 'Sign-in failed. Ensure Google Play Services are up to date.';
+        } else {
+          userMessage = 'Google Sign-In error: ${e.message ?? e.code}';
+        }
+      } else {
+        userMessage = 'Google Sign-In error: $e';
+      }
+      
+      debugPrint('GD_AUTH_ERROR: Stack trace:\n$st');
+      throw userMessage; // Throwing the message so the UI can catch it
     }
   }
 
-  /// Sign out and clear all local session data.
+
+  @override
   Future<void> signOut() async {
+    debugPrint('GD_AUTH: Signing out from ${signedInEmail ?? "unknown account"}...');
     try {
       await _googleSignIn?.signOut();
-    } catch (_) {}
+      debugPrint('GD_AUTH: GoogleSignIn.signOut() completed');
+    } catch (e) {
+      debugPrint('GD_AUTH_ERROR: GoogleSignIn.signOut() failed: $e');
+    }
 
     _authClient?.close();
     _authClient = null;
@@ -247,212 +324,339 @@ class GoogleDriveBackupService {
     await box.delete(_keyTokenExpiry);
     await box.delete(_keyEmail);
 
-    debugPrint('SIGN OUT: complete');
+    debugPrint('GD_AUTH: Local session cleared');
   }
 
-  // ── Upload ───────────────────────────────────────────────────────────────
+  // ── BaseCloudBackupProvider Implementations ────────────────────────────
 
-  /// Upload encrypted backup to Drive appDataFolder.
-  ///
-  /// After upload, verifies integrity by re-downloading and checking checksums.
-  /// Supports chunked uploads for large backups and versioning via timestamped
-  /// filenames.
-  Future<bool> uploadBackup(
-    Future<Map<String, dynamic>> Function({bool compressMedia}) backupMapGenerator, {
-    BackupService? verificationService,
-    void Function(String phase)? onPhaseChange,
-    bool compressMedia = false,
-    bool useArchive = false,
-  }) async {
-    if (!await _ensureAuthenticated()) {
-      debugPrint('UPLOAD: not authenticated');
-      return false;
+  @override
+  Future<bool> uploadSingleFile(List<int> bytes, String fileName, String checksum) async {
+    // We use the original fileName as part of the encrypted metadata
+    // but the actual cloud filename will be obfuscated.
+    final cloudName = generateObfuscatedName(fileName.endsWith('.vxbackup') ? '.vxbin' : '.dat');
+    final metadata = {
+      'originalName': fileName,
+      'checksum': checksum,
+      'timestamp': DateTime.now().toUtc().millisecondsSinceEpoch,
+      'type': 'single',
+    };
+    final encryptedDesc = encryptCloudMetadata(metadata);
+
+    // Delete any existing backup with same name (legacy support)
+    final existing = await _findFiles(fileName);
+    for (final f in existing) {
+      try {
+        await _driveApi!.files.delete(f.id!);
+      } catch (_) {}
     }
+
+    final byteStream = Stream.fromIterable([bytes]);
+    final media = drive.Media(byteStream, bytes.length);
+    final newFile = drive.File()
+      ..name = cloudName
+      ..parents = ['appDataFolder']
+      ..description = encryptedDesc ?? 'VaultX encrypted data';
 
     try {
-      debugPrint('UPLOAD: generating backup data (compressMedia=$compressMedia)...');
-      final backupData = await backupMapGenerator(compressMedia: compressMedia);
-      final timestamp = DateTime.now().toUtc().millisecondsSinceEpoch;
-
-      List<int> uploadBytes;
-      String checksum;
-      String fileExt;
-
-      if (useArchive) {
-        onPhaseChange?.call('Compressing archive...');
-        final archivePath = await ArchiveService.createArchive(backupData);
-        final file = File(archivePath);
-        uploadBytes = await file.readAsBytes();
-        checksum = sha256.convert(uploadBytes).toString();
-        fileExt = '.vxbackup';
-        await ArchiveService.cleanup(archivePath);
-      } else {
-        uploadBytes = utf8.encode(jsonEncode(backupData));
-        checksum = sha256.convert(uploadBytes).toString();
-        fileExt = '.json';
+      await _driveApi!.files.create(newFile, uploadMedia: media);
+    } catch (e) {
+      final msg = e.toString();
+      if (msg.contains('storageQuotaExceeded') || msg.contains('quota') || msg.contains('storage')) {
+        debugPrint('GD_UPLOAD_ERROR: Storage quota exceeded');
+        throw Exception('Google Drive storage quota exceeded. Free up space or upgrade your storage plan.');
       }
-
-      final totalSize = uploadBytes.length;
-
-      debugPrint('UPLOAD: backup size=${totalSize}B, checksum=$checksum, ext=$fileExt');
-
-      bool uploadOk;
-      if (totalSize <= _kMaxInlineSize) {
-        uploadOk = await _uploadSingleFile(uploadBytes, timestamp, checksum, fileExt);
-      } else {
-        uploadOk = await _uploadChunked(uploadBytes, timestamp, checksum, fileExt);
-      }
-
-      if (!uploadOk) {
-        debugPrint('UPLOAD: upload failed');
-        debugPrint('BACKUP MARKED FAILED');
-        return false;
-      }
-
-      // Post-upload integrity verification
-      if (verificationService != null) {
-        onPhaseChange?.call('Verifying backup data integrity...');
-        debugPrint('UPLOAD: VERIFY START');
-        final verifyResult = await verificationService.verifyBackupIntegrity(
-          backupData,
-        );
-        if (verifyResult.warnings.isNotEmpty) {
-          debugPrint(
-            'UPLOAD: VERIFY WARNINGS: ${verifyResult.warnings.join("; ")}',
-          );
-        }
-        if (!verifyResult.passed) {
-          debugPrint('UPLOAD: VERIFY FAILURE: ${verifyResult.errors}');
-          debugPrint('BACKUP MARKED FAILED');
-          return false;
-        }
-        debugPrint(
-          'UPLOAD: VERIFY SUCCESS (${verifyResult.componentsChecked} components checked)',
-        );
-      }
-
-      debugPrint('BACKUP MARKED SUCCESS');
-      debugPrint('UPLOAD: success (${totalSize}B)');
-      return true;
-    } catch (e, st) {
-      debugPrint('UPLOAD ERROR: $e');
-      debugPrint('$st');
-      debugPrint('BACKUP MARKED FAILED');
-      return false;
+      rethrow;
     }
+    return true;
   }
 
-  // ── Download (public) ────────────────────────────────────────────────────
+  @override
+  Future<bool> uploadChunked(List<int> bytes, String baseName, String checksum, String fileExt) async {
+    final partCount = (bytes.length / BaseCloudBackupProvider.kChunkSize).ceil();
+    final cloudBaseName = generateObfuscatedName('');
 
-  /// Download the most recent backup from Drive.
-  Future<Map<String, dynamic>?> downloadBackup() async {
-    if (!await _ensureAuthenticated()) {
-      debugPrint('DOWNLOAD BACKUP: not authenticated');
-      return null;
+    final manifest = {
+      'type': 'chunked_manifest',
+      'baseName': baseName,
+      'partCount': partCount,
+      'totalSize': bytes.length,
+      'checksum': checksum,
+      'partSize': BaseCloudBackupProvider.kChunkSize,
+      'extension': fileExt,
+    };
+    final manifestBytes = utf8.encode(jsonEncode(manifest));
+    final manifestMedia = drive.Media(Stream.value(manifestBytes), manifestBytes.length);
+    
+    final cloudManifestName = '${cloudBaseName}_m.dat';
+    final metadata = {
+      'originalName': '${baseName}_manifest.json',
+      'checksum': checksum,
+      'timestamp': DateTime.now().toUtc().millisecondsSinceEpoch,
+      'type': 'manifest',
+      'cloudBaseName': cloudBaseName,
+    };
+    final encryptedDesc = encryptCloudMetadata(metadata);
+
+    final manifestFile = drive.File()
+      ..name = cloudManifestName
+      ..parents = ['appDataFolder']
+      ..description = encryptedDesc ?? 'VaultX index';
+    await _driveApi!.files.create(manifestFile, uploadMedia: manifestMedia);
+
+    for (var i = 0; i < partCount; i++) {
+      final start = i * BaseCloudBackupProvider.kChunkSize;
+      final end = (start + BaseCloudBackupProvider.kChunkSize).clamp(0, bytes.length);
+      final chunk = bytes.sublist(start, end);
+      final chunkMedia = drive.Media(Stream.value(chunk), chunk.length);
+      
+      // Use 4-digit padding to ensure correct alphabetical sorting (p0000, p0001, etc.)
+      final cloudPartName = '${cloudBaseName}_p${i.toString().padLeft(4, '0')}.bin';
+      final partMetadata = {
+        'type': 'part',
+        'index': i,
+        'cloudBaseName': cloudBaseName,
+      };
+      
+      final chunkFile = drive.File()
+        ..name = cloudPartName
+        ..parents = ['appDataFolder']
+        ..description = encryptCloudMetadata(partMetadata) ?? 'VaultX part';
+      try {
+        await _driveApi!.files.create(chunkFile, uploadMedia: chunkMedia);
+      } catch (e) {
+        final msg = e.toString();
+        if (msg.contains('storageQuotaExceeded') || msg.contains('quota') || msg.contains('storage')) {
+          throw Exception('Google Drive storage quota exceeded. Free up space or upgrade your storage plan.');
+        }
+        rethrow;
+      }
+
+      onUploadProgress?.call(end, bytes.length);
     }
+    return true;
+  }
 
+  @override
+  Future<List<int>?> downloadFileBytes(String fileId, {int? expectedSize, String? expectedChecksum}) async {
     try {
-      final version = await _findLatestBackup();
-      if (version == null) {
-        debugPrint('DOWNLOAD BACKUP: no backup found on Drive');
+      debugPrint('GD_DRIVE: Downloading file $fileId...');
+      final response = await _driveApi!.files
+          .get(fileId, downloadOptions: drive.DownloadOptions.fullMedia)
+          .timeout(_kApiCallTimeout);
+
+      if (response is! drive.Media) {
+        debugPrint('GD_DRIVE: Download failed - response is not Media');
         return null;
       }
-      debugPrint('DOWNLOAD BACKUP: found version=${version.fileName}');
-      return _downloadVersion(version);
+
+      final builder = BytesBuilder(copy: false);
+
+      await for (final chunk in response.stream.timeout(_kDownloadTimeout)) {
+        builder.add(chunk);
+        // Optionally update progress if we have a callback
+        // onDownloadProgress?.call(builder.length, expectedSize ?? -1);
+      }
+
+      final result = builder.takeBytes();
+      debugPrint('GD_DRIVE: Download complete - ${result.length} bytes');
+      return result;
     } catch (e, st) {
-      debugPrint('DOWNLOAD BACKUP ERROR: $e');
-      debugPrint('$st');
+      debugPrint('GD_DRIVE_ERROR: Download failed for $fileId: $e');
+      debugPrint('GD_DRIVE_ERROR: Stack trace:\n$st');
       return null;
     }
   }
 
-  /// Download a specific backup version by its file ID.
-  ///
-  /// Handles both single-file and chunked backups by delegating to
-  /// [_downloadVersion].
-  Future<Map<String, dynamic>?> downloadVersion(BackupVersion version) async {
-    if (!await _ensureAuthenticated()) {
-      debugPrint('DOWNLOAD VERSION: not authenticated');
-      return null;
-    }
+  @override
+  Future<List<int>?> downloadChunked(String baseName, String manifestFileId) async {
+    final manifestBytes = await downloadFileBytes(manifestFileId);
+    if (manifestBytes == null || manifestBytes.isEmpty) return null;
+
+    Map<String, dynamic> manifest;
     try {
-      return _downloadVersion(version);
-    } catch (e, st) {
-      debugPrint('DOWNLOAD VERSION ERROR: $e');
-      debugPrint('$st');
+      manifest = jsonDecode(utf8.decode(manifestBytes)) as Map<String, dynamic>;
+    } catch (_) {
       return null;
     }
+
+    final partCount = manifest['partCount'] as int;
+    final totalSize = manifest['totalSize'] as int;
+    final expectedChecksum = manifest['checksum'] as String;
+
+    // We need to find the cloudBaseName to download parts.
+    // If it's a legacy manifest, the baseName is in the filename.
+    // If it's a new manifest, we look at the manifest file's description.
+    String partPrefix;
+    final manifestMeta = await _driveApi!.files.get(manifestFileId, $fields: 'name,description') as drive.File;
+    final decrypted = decryptCloudMetadata(manifestMeta.description);
+    
+    if (decrypted != null && decrypted['cloudBaseName'] != null) {
+      partPrefix = '${decrypted['cloudBaseName']}_p';
+    } else {
+      // Legacy support
+      partPrefix = '${baseName}_part';
+    }
+
+    final allParts = <drive.File>[];
+    String? nextPageToken;
+    const int maxPartPages = 10;
+    var partPages = 0;
+
+    do {
+      final partsResponse = await _driveApi!.files
+          .list(
+            q: "name contains '$partPrefix' and 'appDataFolder' in parents and trashed=false",
+            spaces: 'appDataFolder',
+            orderBy: 'name',
+            pageToken: nextPageToken,
+          )
+          .timeout(_kApiCallTimeout);
+
+      if (partsResponse.files == null) break;
+      allParts.addAll(partsResponse.files!);
+      nextPageToken = partsResponse.nextPageToken;
+      partPages++;
+    } while (nextPageToken != null && nextPageToken.isNotEmpty && partPages < maxPartPages);
+
+    if (allParts.length < partCount) return null;
+
+    // Filtering exactly by prefix just in case "contains" was too broad
+    final filteredParts = allParts.where((f) => f.name != null && f.name!.startsWith(partPrefix)).toList();
+    if (filteredParts.length < partCount) return null;
+
+    final allBytes = <int>[];
+    for (final partFile in filteredParts) {
+      final chunk = await downloadFileBytes(partFile.id!);
+      if (chunk == null || chunk.isEmpty) return null;
+      allBytes.addAll(chunk);
+    }
+
+    if (allBytes.length != totalSize) return null;
+    if (sha256.convert(allBytes).toString() != expectedChecksum) return null;
+
+    return allBytes;
+  }
+
+  @override
+  Future<void> recordBackupTime() async {
+    await Hive.box('vaultx_settings').put(
+      'lastGoogleBackupAt',
+      DateTime.now().toUtc().toIso8601String(),
+    );
   }
 
   // ── Listing ──────────────────────────────────────────────────────────────
 
-  /// List all available backup versions sorted newest-first.
+  @override
   Future<List<BackupVersion>> listBackups() async {
-    if (!await _ensureAuthenticated()) return [];
+    if (!await ensureAuthenticated()) return [];
 
     try {
-      final response = await _driveApi!.files
-          .list(
-            q: "name contains '$_backupPrefix' and 'appDataFolder' in parents and trashed=false",
-            spaces: 'appDataFolder',
-            orderBy: 'createdTime desc',
-            pageSize: 20,
-            // Include description so we can extract the checksum later
-            $fields: 'files(id,name,size,createdTime,description)',
-          )
-          .timeout(_kApiCallTimeout);
-
-      if (response.files == null) return [];
-
       final versions = <BackupVersion>[];
-      for (final file in response.files!) {
-        final name = file.name ?? '';
-        if (!name.startsWith(_backupPrefix)) continue;
-        if (name.contains('_part')) continue;
+      String? nextPageToken;
+      const int maxPages = 10;
+      var pages = 0;
 
-        versions.add(
-          BackupVersion(
-            driveFileId: file.id ?? '',
-            fileName: name,
-            createdAt: file.createdTime != null
-                ? DateTime.parse(file.createdTime!.toIso8601String())
-                : DateTime.now(),
-            totalSizeBytes: file.size != null
-                ? int.tryParse(file.size!) ?? 0
-                : 0,
-            hasAuthBundle: true,
-          ),
-        );
+      do {
+        final response = await _driveApi!.files
+            .list(
+              spaces: 'appDataFolder',
+              orderBy: 'createdTime desc',
+              pageSize: 100,
+              pageToken: nextPageToken,
+              $fields: 'files(id,name,size,createdTime,description),nextPageToken',
+            )
+            .timeout(_kApiCallTimeout);
+
+        if (response.files == null) break;
+
+        for (final file in response.files!) {
+        final name = file.name ?? '';
+        final description = file.description;
+        
+        // 1. Try decrypting metadata (New Obfuscated Format)
+        final isObfuscated = description?.startsWith(BaseCloudBackupProvider.kObfuscatedMagic) ?? false;
+        
+        if (isObfuscated) {
+          final meta = decryptCloudMetadata(description);
+          if (meta != null) {
+            // Decryption succeeded - we have the original name
+            final type = meta['type'] as String?;
+            if (type == 'single' || type == 'manifest') {
+              versions.add(
+                BackupVersion(
+                  driveFileId: file.id ?? '',
+                  fileName: meta['originalName'] as String? ?? name,
+                  createdAt: file.createdTime != null
+                      ? DateTime.parse(file.createdTime!.toIso8601String())
+                      : DateTime.now(),
+                  totalSizeBytes: file.size != null ? int.tryParse(file.size!) ?? 0 : 0,
+                  hasAuthBundle: true,
+                ),
+              );
+            }
+          } else {
+            // Decryption failed (probably missing masterKey) but it IS a VaultX file
+            // We add it to the list so detection succeeds.
+            versions.add(
+              BackupVersion(
+                driveFileId: file.id ?? '',
+                fileName: name, // Show obfuscated name or "Encrypted Backup"
+                createdAt: file.createdTime != null
+                    ? DateTime.parse(file.createdTime!.toIso8601String())
+                    : DateTime.now(),
+                totalSizeBytes: file.size != null ? int.tryParse(file.size!) ?? 0 : 0,
+                hasAuthBundle: true,
+              ),
+            );
+          }
+          continue;
+        }
+
+        // 2. Legacy Support (Readable Format)
+        if (name.startsWith(BaseCloudBackupProvider.kBackupPrefix)) {
+          if (name.contains('_part')) continue;
+          versions.add(
+            BackupVersion(
+              driveFileId: file.id ?? '',
+              fileName: name,
+              createdAt: file.createdTime != null
+                  ? DateTime.parse(file.createdTime!.toIso8601String())
+                  : DateTime.now(),
+              totalSizeBytes: file.size != null ? int.tryParse(file.size!) ?? 0 : 0,
+              hasAuthBundle: true,
+            ),
+          );
+        }
       }
-      debugPrint('LIST BACKUPS: found ${versions.length} versions');
+        nextPageToken = response.nextPageToken;
+        pages++;
+      } while (nextPageToken != null && nextPageToken.isNotEmpty && pages < maxPages);
+
       return versions;
     } catch (e, st) {
-      debugPrint('LIST BACKUPS ERROR: $e');
-      debugPrint('$st');
+      debugPrint('LIST BACKUPS ERROR: $e\n$st');
       return [];
     }
   }
 
-  /// Check whether any backup exists on Drive.
+  @override
   Future<bool> hasBackup() async {
-    if (!await _ensureAuthenticated()) return false;
-    try {
-      return (await _findLatestBackup()) != null;
-    } catch (e, st) {
-      debugPrint('HAS BACKUP ERROR: $e');
-      debugPrint('$st');
-      return false;
-    }
+    if (!await ensureAuthenticated()) return false;
+    return (await findLatestBackup()) != null;
   }
 
-  /// Find the latest backup version (exposed publicly for restore detection).
+  @override
   Future<BackupVersion?> findLatestBackup() async {
-    return _findLatestBackup();
+    if (!await ensureAuthenticated()) return null;
+    final versions = await listBackups();
+    if (versions.isEmpty) return null;
+    return versions.first;
   }
 
-  /// Get backup metadata with item counts from the manifest.
+  @override
   Future<BackupVersion?> getBackupMetadata() async {
-    final version = await _findLatestBackup();
+    final version = await findLatestBackup();
     if (version == null) return null;
 
     try {
@@ -476,12 +680,11 @@ class GoogleDriveBackupService {
         hasAuthBundle: data.containsKey('authBundle'),
       );
     } catch (e) {
-      debugPrint('GET BACKUP METADATA ERROR: $e');
       return version;
     }
   }
 
-  /// Delete old backups keeping only the [keepCount] most recent.
+  @override
   Future<int> pruneBackups({int keepCount = 5}) async {
     final versions = await listBackups();
     if (versions.length <= keepCount) return 0;
@@ -489,7 +692,15 @@ class GoogleDriveBackupService {
     var deleted = 0;
     for (var i = keepCount; i < versions.length; i++) {
       try {
-        await _driveApi!.files.delete(versions[i].driveFileId);
+        final version = versions[i];
+        
+        // Before deleting the manifest, we MUST check if it has obfuscated parts
+        if (version.fileName.endsWith('_manifest.json')) {
+           final baseName = version.fileName.replaceAll('_manifest.json', '');
+           await _deleteParts(baseName, version.driveFileId);
+        }
+        
+        await _driveApi!.files.delete(version.driveFileId);
         deleted++;
       } catch (e) {
         debugPrint('PRUNE: failed to delete ${versions[i].driveFileId}: $e');
@@ -497,16 +708,48 @@ class GoogleDriveBackupService {
     }
     return deleted;
   }
+  
+  Future<void> _deleteParts(String baseName, String manifestFileId) async {
+      String partPrefix;
+      
+      // Attempt to resolve cloud prefix from manifest metadata
+      try {
+        final manifestMeta = await _driveApi!.files.get(manifestFileId, $fields: 'description') as drive.File;
+        final decrypted = decryptCloudMetadata(manifestMeta.description);
+        if (decrypted != null && decrypted['cloudBaseName'] != null) {
+          partPrefix = '${decrypted['cloudBaseName']}_p';
+        } else {
+          partPrefix = '${baseName}_part';
+        }
+      } catch (_) {
+        partPrefix = '${baseName}_part';
+      }
 
-  /// Deletes ALL backups from the Google Drive appDataFolder.
+      final response = await _driveApi!.files.list(
+        q: "name contains '$partPrefix' and 'appDataFolder' in parents and trashed=false",
+        spaces: 'appDataFolder',
+      );
+      if (response.files != null) {
+         for (final file in response.files!) {
+            if (file.id != null && file.name != null && file.name!.startsWith(partPrefix)) {
+               try {
+                 await _driveApi!.files.delete(file.id!);
+               } catch (_) {}
+            }
+         }
+      }
+  }
+
+  @override
   Future<int> deleteAllBackups() async {
-    if (!await _ensureAuthenticated()) return 0;
+    if (!await ensureAuthenticated()) return 0;
     
     var deleted = 0;
     try {
+      // List all files in AppData folder to catch obfuscated files too
       final response = await _driveApi!.files.list(
-        q: "name contains '$_backupPrefix' and 'appDataFolder' in parents and trashed=false",
         spaces: 'appDataFolder',
+        $fields: 'files(id,name)',
       );
 
       if (response.files != null) {
@@ -515,29 +758,26 @@ class GoogleDriveBackupService {
             try {
               await _driveApi!.files.delete(file.id!);
               deleted++;
-            } catch (e) {
-              debugPrint('DELETE ALL: failed to delete ${file.id}: $e');
-            }
+            } catch (_) {}
           }
         }
       }
-    } catch (e, st) {
-      debugPrint('DELETE ALL ERROR: $e\n$st');
-    }
+    } catch (_) {}
     return deleted;
   }
 
-  /// Last successful backup timestamp from Hive.
+  @override
   String? get lastBackupAt =>
       Hive.box('vaultx_settings').get('lastGoogleBackupAt') as String?;
 
-  /// Storage usage info for backups in appDataFolder.
+  @override
   Future<({int fileCount, int totalBytes})> storageUsage() async {
-    if (!await _ensureAuthenticated()) return (fileCount: 0, totalBytes: 0);
+    if (!await ensureAuthenticated()) return (fileCount: 0, totalBytes: 0);
     try {
+      // List all files in AppData since names are now obfuscated
       final response = await _driveApi!.files.list(
-        q: "name contains '$_backupPrefix' and 'appDataFolder' in parents and trashed=false",
         spaces: 'appDataFolder',
+        $fields: 'files(id,size)',
       );
       var totalBytes = 0;
       var count = 0;
@@ -553,454 +793,19 @@ class GoogleDriveBackupService {
     }
   }
 
-  // ── Internal upload ──────────────────────────────────────────────────────
-
-  Future<bool> _uploadSingleFile(
-    List<int> jsonBytes,
-    int timestamp,
-    String checksum,
-    String fileExt,
-  ) async {
-    final fileName =
-        '$_backupPrefix${timestamp}_${checksum.substring(0, 8)}$fileExt';
-
-    // Delete any existing backup with same name
-    final existing = await _findFiles(fileName);
-    for (final f in existing) {
-      try {
-        await _driveApi!.files.delete(f.id!);
-      } catch (_) {}
-    }
-
-    debugPrint(
-      'UPLOAD: creating single-file backup $fileName (${jsonBytes.length}B)',
-    );
-
-    final byteStream = Stream.fromIterable([jsonBytes]);
-    final media = drive.Media(byteStream, jsonBytes.length);
-    final newFile = drive.File()
-      ..name = fileName
-      ..parents = ['appDataFolder']
-      // Store full SHA-256 in description for integrity verification on restore
-      ..description =
-          'VaultX backup v2, ${jsonBytes.length}B, sha256=$checksum';
-
-    await _driveApi!.files.create(newFile, uploadMedia: media);
-    await _recordBackupTime();
-    debugPrint('UPLOAD: single-file backup complete');
-    return true;
-  }
-
-  Future<bool> _uploadChunked(
-    List<int> jsonBytes,
-    int timestamp,
-    String checksum,
-    String fileExt,
-  ) async {
-    final baseName = '$_backupPrefix${timestamp}_${checksum.substring(0, 8)}';
-    final partCount = (jsonBytes.length / _kChunkSize).ceil();
-
-    debugPrint('UPLOAD: splitting into $partCount chunks');
-
-    // Upload manifest first
-    final manifest = {
-      'type': 'chunked_manifest',
-      'baseName': baseName,
-      'partCount': partCount,
-      'totalSize': jsonBytes.length,
-      'checksum': checksum,
-      'partSize': _kChunkSize,
-      'extension': fileExt,
-    };
-    final manifestBytes = utf8.encode(jsonEncode(manifest));
-    final manifestMedia = drive.Media(
-      Stream.value(manifestBytes),
-      manifestBytes.length,
-    );
-    final manifestFile = drive.File()
-      ..name = '${baseName}_manifest.json'
-      ..parents = ['appDataFolder'];
-    await _driveApi!.files.create(manifestFile, uploadMedia: manifestMedia);
-
-    // Upload each chunk
-    for (var i = 0; i < partCount; i++) {
-      final start = i * _kChunkSize;
-      final end = (start + _kChunkSize).clamp(0, jsonBytes.length);
-      final chunk = jsonBytes.sublist(start, end);
-      final chunkMedia = drive.Media(Stream.value(chunk), chunk.length);
-      final chunkFile = drive.File()
-        ..name = '${baseName}_part${i.toString().padLeft(4, '0')}.bin'
-        ..parents = ['appDataFolder'];
-      await _driveApi!.files.create(chunkFile, uploadMedia: chunkMedia);
-
-      onUploadProgress?.call(end, jsonBytes.length);
-      debugPrint('UPLOAD: chunk ${i + 1}/$partCount (${chunk.length}B)');
-    }
-
-    await _recordBackupTime();
-    debugPrint('UPLOAD: chunked backup complete ($partCount parts)');
-    return true;
-  }
-
-  // ── Internal download ────────────────────────────────────────────────────
-
-  /// Routes to chunked or single-file download based on filename.
-  ///
-  /// FIX: Previously used an unsafe `as drive.File` cast that could throw
-  /// an unhandled TypeError. Now uses an explicit type check with a clear
-  /// error log. Also fetches the `description` field so we can verify the
-  /// SHA-256 checksum stored there during upload.
-  Future<Map<String, dynamic>?> _downloadVersion(BackupVersion version) async {
-    debugPrint(
-      'DOWNLOAD VERSION: fileName=${version.fileName} fileId=${version.driveFileId}',
-    );
-
-    // Chunked backup: manifest file drives reassembly
-    if (version.fileName.endsWith('_manifest.json')) {
-      final baseName = version.fileName.replaceAll('_manifest.json', '');
-      return _downloadChunked(baseName, version.driveFileId);
-    }
-
-    // Single-file backup: fetch metadata first (including description for
-    // the stored SHA-256 checksum), then download content.
+  @override
+  Future<({int usedBytes, int totalBytes})> getAccountQuota() async {
+    if (!await ensureAuthenticated()) return (usedBytes: 0, totalBytes: 0);
     try {
-      final metadataObj = await _driveApi!.files
-          .get(version.driveFileId, $fields: 'id,name,size,description')
+      final about = await _driveApi!.about
+          .get($fields: 'storageQuota')
           .timeout(_kApiCallTimeout);
-
-      // FIX: was `as drive.File` with no guard; use `is` check instead.
-      if (metadataObj is! drive.File) {
-        debugPrint(
-          'DOWNLOAD VERSION: metadata response is not a drive.File '
-          '(got ${metadataObj.runtimeType})',
-        );
-        return null;
-      }
-
-      final fileSize = metadataObj.size != null
-          ? int.tryParse(metadataObj.size!) ?? 0
-          : 0;
-      debugPrint(
-        'DOWNLOAD VERSION: metadata OK — size=${fileSize}B desc="${metadataObj.description}"',
-      );
-
-      if (fileSize == 0) {
-        debugPrint('DOWNLOAD VERSION: reported file size is 0 — aborting');
-        return null;
-      }
-
-      // Extract expected SHA-256 from description field set during upload
-      String? expectedChecksum;
-      final desc = metadataObj.description ?? '';
-      final match = RegExp(r'sha256=([a-f0-9]{64})').firstMatch(desc);
-      if (match != null) {
-        expectedChecksum = match.group(1);
-        debugPrint(
-          'DOWNLOAD VERSION: extracted expected sha256=$expectedChecksum',
-        );
-      } else {
-        debugPrint(
-          'DOWNLOAD VERSION: no sha256 in description — skipping checksum verify',
-        );
-      }
-
-      return _downloadFileContent(
-        metadataObj,
-        expectedChecksum: expectedChecksum,
-        reportedSize: fileSize,
-      );
-    } catch (e, st) {
-      debugPrint('DOWNLOAD VERSION ERROR: $e');
-      debugPrint('$st');
-      return null;
+      final used = (about.storageQuota?.usage ?? 0) as int;
+      final total = (about.storageQuota?.limit ?? 0) as int;
+      return (usedBytes: used, totalBytes: total);
+    } catch (_) {
+      return (usedBytes: 0, totalBytes: 0);
     }
-  }
-
-  Future<Map<String, dynamic>?> _downloadChunked(
-    String baseName,
-    String manifestFileId,
-  ) async {
-    debugPrint(
-      'DOWNLOAD CHUNKED: starting — baseName=$baseName manifestId=$manifestFileId',
-    );
-    try {
-      // Download manifest
-      final manifestResp = await _driveApi!.files
-          .get(manifestFileId, downloadOptions: drive.DownloadOptions.fullMedia)
-          .timeout(_kApiCallTimeout);
-
-      if (manifestResp is! drive.Media) {
-        debugPrint('DOWNLOAD CHUNKED: manifest response is not Media');
-        return null;
-      }
-
-      final manifestBytes = await manifestResp.stream
-          .fold<List<int>>([], (prev, chunk) => prev..addAll(chunk))
-          .timeout(_kDownloadTimeout);
-
-      if (manifestBytes.isEmpty) {
-        debugPrint('DOWNLOAD CHUNKED: manifest is empty');
-        return null;
-      }
-
-      Map<String, dynamic> manifest;
-      try {
-        manifest =
-            jsonDecode(utf8.decode(manifestBytes)) as Map<String, dynamic>;
-      } catch (e) {
-        debugPrint('DOWNLOAD CHUNKED: manifest JSON parse failed: $e');
-        return null;
-      }
-
-      final partCount = manifest['partCount'] as int;
-      final totalSize = manifest['totalSize'] as int;
-      final expectedChecksum = manifest['checksum'] as String;
-      final fileExt = manifest['extension'] as String? ?? '.json';
-
-      debugPrint(
-        'DOWNLOAD CHUNKED: manifest OK — parts=$partCount totalSize=$totalSize ext=$fileExt',
-      );
-
-      // Find all part files
-      final partsResponse = await _driveApi!.files
-          .list(
-            q: "name contains '${baseName}_part' and 'appDataFolder' in parents and trashed=false",
-            spaces: 'appDataFolder',
-            orderBy: 'name',
-          )
-          .timeout(_kApiCallTimeout);
-
-      final foundParts = partsResponse.files?.length ?? 0;
-      if (foundParts != partCount) {
-        debugPrint(
-          'DOWNLOAD CHUNKED: part count mismatch — expected=$partCount found=$foundParts',
-        );
-        return null;
-      }
-
-      // Download and reassemble parts
-      final allBytes = <int>[];
-      for (var i = 0; i < partsResponse.files!.length; i++) {
-        final partFile = partsResponse.files![i];
-        debugPrint(
-          'DOWNLOAD CHUNKED: downloading part ${i + 1}/$partCount (id=${partFile.id})',
-        );
-
-        final resp = await _driveApi!.files
-            .get(partFile.id!, downloadOptions: drive.DownloadOptions.fullMedia)
-            .timeout(_kApiCallTimeout);
-
-        if (resp is! drive.Media) {
-          debugPrint('DOWNLOAD CHUNKED: part $i response is not Media');
-          return null;
-        }
-
-        final chunk = await resp.stream
-            .fold<List<int>>([], (prev, c) => prev..addAll(c))
-            .timeout(_kDownloadTimeout);
-
-        if (chunk.isEmpty) {
-          debugPrint('DOWNLOAD CHUNKED: part $i is empty');
-          return null;
-        }
-
-        allBytes.addAll(chunk);
-        debugPrint(
-          'DOWNLOAD CHUNKED: part ${i + 1} received ${chunk.length}B, total so far ${allBytes.length}B',
-        );
-      }
-
-      // Validate total size
-      if (allBytes.length != totalSize) {
-        debugPrint(
-          'DOWNLOAD CHUNKED: size mismatch — expected=$totalSize actual=${allBytes.length}',
-        );
-        return null;
-      }
-
-      // Validate SHA-256 checksum
-      final actualChecksum = sha256.convert(allBytes).toString();
-      if (actualChecksum != expectedChecksum) {
-        debugPrint(
-          'DOWNLOAD CHUNKED: checksum MISMATCH — '
-          'expected=$expectedChecksum actual=$actualChecksum',
-        );
-        return null;
-      }
-      debugPrint('DOWNLOAD CHUNKED: checksum verified OK');
-
-      // Parse JSON or extract archive
-      Map<String, dynamic> decoded;
-      try {
-        if (fileExt == '.vxbackup') {
-          final tempDir = await getTemporaryDirectory();
-          final archivePath = '${tempDir.path}/$baseName.vxbackup';
-          await File(archivePath).writeAsBytes(allBytes);
-          decoded = await ArchiveService.extractArchive(archivePath);
-          await ArchiveService.cleanup(archivePath);
-        } else {
-          decoded = jsonDecode(utf8.decode(allBytes)) as Map<String, dynamic>;
-        }
-      } catch (e) {
-        debugPrint('DOWNLOAD CHUNKED: payload parse/extract failed: $e');
-        return null;
-      }
-
-      if (decoded.isEmpty) {
-        debugPrint('DOWNLOAD CHUNKED: decoded JSON is empty');
-        return null;
-      }
-
-      debugPrint(
-        'DOWNLOAD CHUNKED: success (${allBytes.length}B) keys=${decoded.keys.toList()}',
-      );
-
-      // Import auth bundle if present
-      if (authService != null) {
-        final bundle = decoded['authBundle'] as Map<String, dynamic>?;
-        if (bundle != null) {
-          debugPrint('DOWNLOAD CHUNKED: importing auth bundle...');
-          try {
-            await authService!.importAuthBundle(bundle, force: false);
-          } catch (e) {
-            debugPrint('DOWNLOAD CHUNKED: auth bundle import error: $e');
-            // Non-fatal — proceed with restore
-          }
-        }
-      }
-
-      return decoded;
-    } catch (e, st) {
-      debugPrint('DOWNLOAD CHUNKED ERROR: $e');
-      debugPrint('$st');
-      return null;
-    }
-  }
-
-  /// Downloads and validates a single backup file.
-  ///
-  /// FIX (multiple):
-  /// 1. Validates downloaded bytes are not empty.
-  /// 2. Verifies SHA-256 checksum extracted from the file's description field.
-  /// 3. JSON parse is wrapped in try/catch to prevent silent null return masking
-  ///    a parse error.
-  /// 4. Stream fold has a timeout so a stalled download doesn't hang forever.
-  /// 5. Auth bundle import errors are caught so they don't abort the restore.
-  Future<Map<String, dynamic>?> _downloadFileContent(
-    drive.File file, {
-    String? expectedChecksum,
-    int reportedSize = 0,
-  }) async {
-    debugPrint(
-      'DOWNLOAD FILE: id=${file.id} name=${file.name} '
-      'reportedSize=${reportedSize}B expectedChecksum=$expectedChecksum',
-    );
-
-    final response = await _driveApi!.files
-        .get(file.id!, downloadOptions: drive.DownloadOptions.fullMedia)
-        .timeout(_kApiCallTimeout);
-
-    if (response is! drive.Media) {
-      debugPrint(
-        'DOWNLOAD FILE: response is not Media (got ${response.runtimeType})',
-      );
-      return null;
-    }
-
-    // Accumulate bytes with a timeout so we don't hang on a stalled connection
-    List<int> bytes;
-    try {
-      bytes = await response.stream
-          .fold<List<int>>([], (prev, chunk) => prev..addAll(chunk))
-          .timeout(_kDownloadTimeout);
-    } on TimeoutException {
-      debugPrint('DOWNLOAD FILE: stream timed out after $_kDownloadTimeout');
-      return null;
-    }
-
-    debugPrint('DOWNLOAD FILE: received ${bytes.length}B');
-
-    // Validate non-empty
-    if (bytes.isEmpty) {
-      debugPrint('DOWNLOAD FILE: downloaded file is empty');
-      return null;
-    }
-
-    // Validate size matches reported size (if known)
-    if (reportedSize > 0 && bytes.length != reportedSize) {
-      debugPrint(
-        'DOWNLOAD FILE: size mismatch — reported=$reportedSize actual=${bytes.length} '
-        '(truncated download?)',
-      );
-      // Warn but continue; Drive metadata size isn't always byte-perfect
-    }
-
-    // Verify SHA-256 checksum if available
-    if (expectedChecksum != null) {
-      final actualChecksum = sha256.convert(bytes).toString();
-      if (actualChecksum != expectedChecksum) {
-        debugPrint(
-          'DOWNLOAD FILE: checksum MISMATCH — '
-          'expected=$expectedChecksum actual=$actualChecksum',
-        );
-        return null;
-      }
-      debugPrint('DOWNLOAD FILE: checksum verified OK');
-    }
-
-    // Parse JSON or extract archive with error handling
-    Map<String, dynamic> decoded;
-    try {
-      if (file.name != null && file.name!.endsWith('.vxbackup')) {
-        final tempDir = await getTemporaryDirectory();
-        final archivePath = '${tempDir.path}/${file.name}';
-        await File(archivePath).writeAsBytes(bytes);
-        decoded = await ArchiveService.extractArchive(archivePath);
-        await ArchiveService.cleanup(archivePath);
-      } else {
-        decoded = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
-      }
-    } catch (e) {
-      debugPrint(
-        'DOWNLOAD FILE: parse/extract failed: $e '
-      );
-      return null;
-    }
-
-    if (decoded.isEmpty) {
-      debugPrint('DOWNLOAD FILE: decoded JSON map is empty');
-      return null;
-    }
-
-    debugPrint(
-      'DOWNLOAD FILE: success (${bytes.length}B) keys=${decoded.keys.toList()}',
-    );
-
-    // Import auth bundle if present
-    if (authService != null) {
-      final bundle = decoded['authBundle'] as Map<String, dynamic>?;
-      if (bundle != null) {
-        debugPrint('DOWNLOAD FILE: importing auth bundle...');
-        try {
-          await authService!.importAuthBundle(bundle, force: false);
-        } catch (e) {
-          debugPrint('DOWNLOAD FILE: auth bundle import error: $e');
-          // Non-fatal — proceed with restore
-        }
-      }
-    }
-
-    return decoded;
-  }
-
-  // ── Internal helpers ─────────────────────────────────────────────────────
-
-  /// Find the latest backup version (sorted by creation time desc).
-  Future<BackupVersion?> _findLatestBackup() async {
-    if (!await _ensureAuthenticated()) return null;
-    final versions = await listBackups();
-    if (versions.isEmpty) return null;
-    return versions.first;
   }
 
   Future<List<drive.File>> _findFiles(String name) async {
@@ -1011,11 +816,5 @@ class GoogleDriveBackupService {
         )
         .timeout(_kApiCallTimeout);
     return response.files ?? [];
-  }
-
-  Future<void> _recordBackupTime() async {
-    await Hive.box(
-      'vaultx_settings',
-    ).put('lastGoogleBackupAt', DateTime.now().toUtc().toIso8601String());
   }
 }

@@ -15,6 +15,12 @@ import 'auth_service.dart';
 import 'compression_service.dart';
 import 'crypto_service.dart';
 
+/// Debug-only logger that becomes a no-op in release builds.
+/// Use instead of raw debugPrint to keep production clean.
+void _log(String message) {
+  if (kDebugMode) debugPrint(message);
+}
+
 /// Callback type for progress reporting during backup/restore.
 typedef BackupProgressCallback = void Function(BackupProgress progress);
 
@@ -124,7 +130,7 @@ class BackupService {
         error: e.toString(),
       );
       report();
-      debugPrint('BACKUP mainVault ERROR: $e\n$st');
+      _log('BACKUP mainVault ERROR: $e\n$st');
     }
 
     // ── 2. Hidden vault records ──────────────────────────────────────────────
@@ -160,7 +166,7 @@ class BackupService {
         error: e.toString(),
       );
       report();
-      debugPrint('BACKUP hiddenVault ERROR: $e\n$st');
+      _log('BACKUP hiddenVault ERROR: $e\n$st');
     }
 
     // ── 3. Auth bundle ───────────────────────────────────────────────────────
@@ -188,13 +194,13 @@ class BackupService {
       // nonces, etc.) is NEVER included in backups.
       final portableBundle = sanitizePortableAuthBundle(fullBundle);
       data['authBundle'] = portableBundle;
-      debugPrint(
+      _log(
         'AUTHBUNDLE BEFORE HASH: keys=[${portableBundle.keys.join(",")}]',
       );
       final jsonStr = _canonicalJsonEncode(portableBundle);
-      debugPrint('AUTHBUNDLE AFTER NORMALIZATION: len=${jsonStr.length}');
+      _log('AUTHBUNDLE AFTER NORMALIZATION: len=${jsonStr.length}');
       final checksum = sha256.convert(utf8.encode(jsonStr)).toString();
-      debugPrint('AUTHBUNDLE CHECKSUM GENERATED: $checksum');
+      _log('AUTHBUNDLE CHECKSUM GENERATED: $checksum');
       checksums.add(
         ComponentChecksum(
           component: BackupComponent.authBundle,
@@ -213,7 +219,7 @@ class BackupService {
         error: e.toString(),
       );
       report();
-      debugPrint('BACKUP authBundle ERROR: $e\n$st');
+      _log('BACKUP authBundle ERROR: $e\n$st');
     }
 
     // ── 4. Settings ──────────────────────────────────────────────────────────
@@ -249,7 +255,7 @@ class BackupService {
         error: e.toString(),
       );
       report();
-      debugPrint('BACKUP settings ERROR: $e\n$st');
+      _log('BACKUP settings ERROR: $e\n$st');
     }
 
     // ── 5. Drive metadata ────────────────────────────────────────────────────
@@ -286,7 +292,7 @@ class BackupService {
         error: e.toString(),
       );
       report();
-      debugPrint('BACKUP driveMetadata ERROR: $e\n$st');
+      _log('BACKUP driveMetadata ERROR: $e\n$st');
     }
 
     // ── 7. Drive blobs (streamed, memory-safe) ───────────────────────────────
@@ -322,7 +328,7 @@ class BackupService {
         error: e.toString(),
       );
       report();
-      debugPrint('BACKUP driveBlobs ERROR: $e\n$st');
+      _log('BACKUP driveBlobs ERROR: $e\n$st');
     }
 
     // ── 8. Attachment blobs (streamed, memory-safe) ──────────────────────────
@@ -373,7 +379,7 @@ class BackupService {
         error: e.toString(),
       );
       report();
-      debugPrint('BACKUP attachmentBlobs ERROR: $e\n$st');
+      _log('BACKUP attachmentBlobs ERROR: $e\n$st');
     }
 
     // ── 9. Password entries ──────────────────────────────────────────────
@@ -409,7 +415,7 @@ class BackupService {
         error: e.toString(),
       );
       report();
-      debugPrint('BACKUP passwordEntries ERROR: $e\n$st');
+      _log('BACKUP passwordEntries ERROR: $e\n$st');
     }
 
     final manifest = BackupManifest(
@@ -429,22 +435,24 @@ class BackupService {
   /// [backupData] is the full backup map including manifest.
   /// [mode] controls merge vs replace behavior.
   /// [mainMasterKey] is the decrypted main vault master key for re-encrypting.
+  /// [targetMasterKey] is the master key of the CURRENT session (only needed for merge).
   Future<RestoreResult> restoreBackup(
     Map<String, dynamic> backupData, {
     required RestoreMode mode,
     required Uint8List mainMasterKey,
+    Uint8List? targetMasterKey,
     BackupProgressCallback? onRestoreProgress,
   }) async {
-    debugPrint('RESTORE START: mode=$mode');
-    debugPrint('RESTORE: backupData keys=${backupData.keys.join(", ")}');
-    debugPrint(
+    _log('RESTORE START: mode=$mode');
+    _log('RESTORE: backupData keys=${backupData.keys.join(", ")}');
+    _log(
       'RESTORE: has authBundle=${backupData.containsKey("authBundle")}',
     );
-    debugPrint('RESTORE: has manifest=${backupData.containsKey("manifest")}');
-    debugPrint(
+    _log('RESTORE: has manifest=${backupData.containsKey("manifest")}');
+    _log(
       'RESTORE: mainVault entries=${(backupData["mainVault"] as List?)?.length ?? 0}',
     );
-    debugPrint(
+    _log(
       'RESTORE: hiddenVault entries=${(backupData["hiddenVault"] as List?)?.length ?? 0}',
     );
 
@@ -453,7 +461,7 @@ class BackupService {
     final manifest = manifestJson != null
         ? BackupManifest.fromJson(manifestJson)
         : null;
-    final snapshot = <String, List<Map<String, dynamic>>>{};
+    final snapshot = <String, dynamic>{};
     final warnings = <String>[];
 
     var mainNotesRestored = 0;
@@ -472,7 +480,7 @@ class BackupService {
 
     // ── Verify manifest integrity first ────────────────────────────────────
     if (manifest != null) {
-      debugPrint(
+      _log(
         'RESTORE VERIFY: manifest version=${manifest.version}, ${manifest.checksums.length} components',
       );
       components.add(
@@ -486,7 +494,7 @@ class BackupService {
       for (final c in manifest.checksums) {
         final raw = backupData[_componentKey(c.component)];
         if (raw == null) {
-          debugPrint(
+          _log(
             'RESTORE VERIFY: missing component data for ${c.component}',
           );
           continue;
@@ -506,7 +514,7 @@ class BackupService {
         final jsonStr = _canonicalJsonEncode(dataForChecksum);
         final actual = sha256.convert(utf8.encode(jsonStr)).toString();
         if (c.component == BackupComponent.authBundle) {
-          debugPrint(
+          _log(
             'AUTHBUNDLE RESTORE CHECKSUM: computed=$actual stored=${c.sha256}',
           );
         }
@@ -517,7 +525,7 @@ class BackupService {
         );
         if (error != null) {
           if (isHardFail) {
-            debugPrint(
+            _log(
               'RESTORE VERIFY FAILED: $error (component=${c.component})',
             );
             report();
@@ -527,24 +535,31 @@ class BackupService {
           // Password verification is the real security validation.
           warnings.add('$error (component=${c.component})');
           if (c.component == BackupComponent.authBundle) {
-            debugPrint('AUTHBUNDLE SOFT VERIFY WARNING: $error');
+            _log('AUTHBUNDLE SOFT VERIFY WARNING: $error');
           } else {
-            debugPrint(
+            _log(
               'SOFT VERIFY WARNING: $error (component=${c.component})',
             );
           }
           continue;
         }
-        debugPrint('RESTORE VERIFY OK: ${c.component} checksum matches');
+        _log('RESTORE VERIFY OK: ${c.component} checksum matches');
       }
-      debugPrint('RESTORE VERIFY: all component checksums passed');
+      _log('RESTORE VERIFY: all component checksums passed');
     }
 
     // ── Snapshot current state for rollback ────────────────────────────────
     if (mode == RestoreMode.replace) {
+      // Flush Hive before snapshot so the in-memory cache reflects all
+      // recently written data — otherwise rollback may restore stale state.
+      await Hive.box('vaultx_records').flush();
+      await Hive.box('vaultx_drive').flush();
+      await Hive.box('vaultx_passwords').flush();
       snapshot['mainVault'] = _collectVaultRecords('main');
       snapshot['hiddenVault'] = _collectVaultRecords('hidden');
       snapshot['driveMetadata'] = _collectDriveRecords();
+      // Snapshot existing blob files so we can clean up orphans on rollback
+      snapshot['_existingBlobs'] = await _collectExistingBlobPaths();
     }
     
     var preservedLocalItems = 0;
@@ -554,10 +569,10 @@ class BackupService {
 
     try {
       // ── 1. Restore auth bundle ────────────────────────────────────────────
-      debugPrint('RESTORE COMPONENT START: authBundle');
+      _log('RESTORE COMPONENT START: authBundle');
       final authBundle = backupData['authBundle'] as Map<String, dynamic>?;
       if (authBundle != null && authService != null) {
-        debugPrint(
+        _log(
           'RESTORE COMPONENT: authBundle has ${authBundle.length} entries: ${authBundle.keys.join(", ")}',
         );
         components.add(
@@ -590,18 +605,18 @@ class BackupService {
           state: BackupOperationState.completed,
         );
         report();
-        debugPrint('RESTORE COMPONENT SUCCESS: authBundle');
+        _log('RESTORE COMPONENT SUCCESS: authBundle');
       } else {
-        debugPrint(
+        _log(
           'RESTORE COMPONENT SKIP: authBundle (${authBundle == null ? "no data" : "no authService"})',
         );
       }
 
       // ── 2. Restore settings ───────────────────────────────────────────────
-      debugPrint('RESTORE COMPONENT START: settings');
+      _log('RESTORE COMPONENT START: settings');
       final settings = backupData['settings'] as Map<String, dynamic>?;
       if (settings != null) {
-        debugPrint(
+        _log(
           'RESTORE COMPONENT: settings has ${settings.length} entries',
         );
         components.add(
@@ -621,18 +636,18 @@ class BackupService {
           itemsProcessed: settings.length,
         );
         report();
-        debugPrint(
+        _log(
           'RESTORE COMPONENT SUCCESS: settings ($settingsRestored entries)',
         );
       } else {
-        debugPrint('RESTORE COMPONENT SKIP: settings (no data)');
+        _log('RESTORE COMPONENT SKIP: settings (no data)');
       }
 
       // ── 3. Restore main vault records ─────────────────────────────────────
-      debugPrint('RESTORE COMPONENT START: mainVault');
+      _log('RESTORE COMPONENT START: mainVault');
       final mainRecords = backupData['mainVault'] as List?;
       if (mainRecords != null && mainRecords.isNotEmpty) {
-        debugPrint(
+        _log(
           'RESTORE COMPONENT: mainVault has ${mainRecords.length} records',
         );
         components.add(
@@ -655,6 +670,7 @@ class BackupService {
             );
             report();
           },
+          targetMasterKey: targetMasterKey,
         );
 
         components[components.length - 1] = components.last.copyWith(
@@ -662,20 +678,20 @@ class BackupService {
           itemsProcessed: mainRecords.length,
         );
         report();
-        debugPrint(
+        _log(
           'RESTORE COMPONENT SUCCESS: mainVault ($mainNotesRestored records)',
         );
       } else {
-        debugPrint(
+        _log(
           'RESTORE COMPONENT SKIP: mainVault (${mainRecords == null ? "no data" : "empty"})',
         );
       }
 
       // ── 5. Restore hidden vault records ───────────────────────────────────
-      debugPrint('RESTORE COMPONENT START: hiddenVault');
+      _log('RESTORE COMPONENT START: hiddenVault');
       final hiddenRecords = backupData['hiddenVault'] as List?;
       if (hiddenRecords != null && hiddenRecords.isNotEmpty) {
-        debugPrint(
+        _log(
           'RESTORE COMPONENT: hiddenVault has ${hiddenRecords.length} records',
         );
         components.add(
@@ -698,6 +714,7 @@ class BackupService {
             );
             report();
           },
+          targetMasterKey: targetMasterKey,
         );
 
         components[components.length - 1] = components.last.copyWith(
@@ -705,20 +722,20 @@ class BackupService {
           itemsProcessed: hiddenRecords.length,
         );
         report();
-        debugPrint(
+        _log(
           'RESTORE COMPONENT SUCCESS: hiddenVault ($hiddenNotesRestored records)',
         );
       } else {
-        debugPrint(
+        _log(
           'RESTORE COMPONENT SKIP: hiddenVault (${hiddenRecords == null ? "no data" : "empty"})',
         );
       }
 
       // ── 6. Restore drive metadata ─────────────────────────────────────────
-      debugPrint('RESTORE COMPONENT START: driveMetadata');
+      _log('RESTORE COMPONENT START: driveMetadata');
       final driveMeta = backupData['driveMetadata'] as List?;
       if (driveMeta != null && driveMeta.isNotEmpty) {
-        debugPrint(
+        _log(
           'RESTORE COMPONENT: driveMetadata has ${driveMeta.length} entries',
         );
         components.add(
@@ -740,20 +757,20 @@ class BackupService {
           itemsProcessed: driveMeta.length,
         );
         report();
-        debugPrint(
+        _log(
           'RESTORE COMPONENT SUCCESS: driveMetadata ($driveFilesRestored entries)',
         );
       } else {
-        debugPrint(
+        _log(
           'RESTORE COMPONENT SKIP: driveMetadata (${driveMeta == null ? "no data" : "empty"})',
         );
       }
 
       // ── 7. Restore drive blobs ────────────────────────────────────────────
-      debugPrint('RESTORE COMPONENT START: driveBlobs');
+      _log('RESTORE COMPONENT START: driveBlobs');
       final driveBlobs = backupData['driveBlobs'] as List?;
       if (driveBlobs != null && driveBlobs.isNotEmpty) {
-        debugPrint(
+        _log(
           'RESTORE COMPONENT: driveBlobs has ${driveBlobs.length} blobs',
         );
         components.add(
@@ -769,6 +786,7 @@ class BackupService {
           _normalizeRecordList(driveBlobs),
           mainMasterKey,
           'drive',
+          mode,
           (processed) {
             components[components.length - 1] = components.last.copyWith(
               itemsProcessed: processed,
@@ -782,20 +800,20 @@ class BackupService {
           itemsProcessed: driveBlobs.length,
         );
         report();
-        debugPrint(
+        _log(
           'RESTORE COMPONENT SUCCESS: driveBlobs ($driveBlobsRestored blobs)',
         );
       } else {
-        debugPrint(
+        _log(
           'RESTORE COMPONENT SKIP: driveBlobs (${driveBlobs == null ? "no data" : "empty"})',
         );
       }
 
       // ── 8. Restore attachment blobs ───────────────────────────────────────
-      debugPrint('RESTORE COMPONENT START: attachmentBlobs');
+      _log('RESTORE COMPONENT START: attachmentBlobs');
       final attachmentBlobs = backupData['attachmentBlobs'] as List?;
       if (attachmentBlobs != null && attachmentBlobs.isNotEmpty) {
-        debugPrint(
+        _log(
           'RESTORE COMPONENT: attachmentBlobs has ${attachmentBlobs.length} blobs',
         );
         components.add(
@@ -811,6 +829,7 @@ class BackupService {
           _normalizeRecordList(attachmentBlobs),
           mainMasterKey,
           'attachment',
+          mode,
           (processed) {
             components[components.length - 1] = components.last.copyWith(
               itemsProcessed: processed,
@@ -824,20 +843,20 @@ class BackupService {
           itemsProcessed: attachmentBlobs.length,
         );
         report();
-        debugPrint(
+        _log(
           'RESTORE COMPONENT SUCCESS: attachmentBlobs ($attachmentBlobsRestored blobs)',
         );
       } else {
-        debugPrint(
+        _log(
           'RESTORE COMPONENT SKIP: attachmentBlobs (${attachmentBlobs == null ? "no data" : "empty"})',
         );
       }
 
       // ── 9. Restore password entries ───────────────────────────────────────
-      debugPrint('RESTORE COMPONENT START: passwordEntries');
+      _log('RESTORE COMPONENT START: passwordEntries');
       final passwordEntries = backupData['passwordEntries'] as List?;
       if (passwordEntries != null && passwordEntries.isNotEmpty) {
-        debugPrint(
+        _log(
           'RESTORE COMPONENT: passwordEntries has ${passwordEntries.length} entries',
         );
         components.add(
@@ -859,17 +878,17 @@ class BackupService {
           itemsProcessed: passwordEntries.length,
         );
         report();
-        debugPrint(
+        _log(
           'RESTORE COMPONENT SUCCESS: passwordEntries ($passwordEntriesRestored entries)',
         );
       } else {
-        debugPrint(
+        _log(
           'RESTORE COMPONENT SKIP: passwordEntries (${passwordEntries == null ? "no data" : "empty"})',
         );
       }
 
       // ── Reinitialize runtime auth state ────────────────────────────────
-      debugPrint('RESTORE CONTINUING');
+      _log('RESTORE CONTINUING');
       await _reinitializeRuntimeAuthState();
 
       onProgress?.call(
@@ -880,28 +899,28 @@ class BackupService {
       );
 
       // ── Run restore verification ─────────────────────────────────────────
-      debugPrint('RESTORE: running post-restore verification...');
+      _log('RESTORE: running post-restore verification...');
       final verifyResult = await verifyRestoreIntegrity(backupData);
       if (!verifyResult.passed) {
         warnings.addAll(verifyResult.errors);
-        debugPrint(
+        _log(
           'RESTORE: post-restore verification issues: ${verifyResult.errors}',
         );
       } else {
-        debugPrint('RESTORE: post-restore verification passed');
+        _log('RESTORE: post-restore verification passed');
       }
 
-      debugPrint('RESTORE SUCCESS');
-      debugPrint(
+      _log('RESTORE SUCCESS');
+      _log(
         'RESTORE INSERTED RECORDS: main=$mainNotesRestored, hidden=$hiddenNotesRestored, '
         'drive=$driveFilesRestored, driveBlobs=$driveBlobsRestored, '
         'attachments=$attachmentBlobsRestored, passwords=$passwordEntriesRestored',
       );
-      debugPrint('CACHE REFRESH: Hive boxes flushed after restore');
+      _log('CACHE REFRESH: Hive boxes flushed after restore');
       await Hive.box('vaultx_records').flush();
       await Hive.box('vaultx_drive').flush();
       await Hive.box('vaultx_passwords').flush();
-      debugPrint(
+      _log(
         'RESTORE COMPLETE: success=true, '
         'mainNotes=$mainNotesRestored, hiddenNotes=$hiddenNotesRestored, '
         'driveFiles=$driveFilesRestored, driveBlobs=$driveBlobsRestored, '
@@ -924,16 +943,16 @@ class BackupService {
         verificationWarnings: warnings,
       );
     } catch (e, st) {
-      debugPrint('RESTORE FAILED: exception=$e');
-      debugPrint('RESTORE FAILED stack: $st');
+      _log('RESTORE FAILED: exception=$e');
+      _log('RESTORE FAILED stack: $st');
 
       if (mode == RestoreMode.replace) {
-        debugPrint('RESTORE: rolling back...');
+        _log('RESTORE: rolling back...');
         try {
           await _rollback(snapshot, mainMasterKey);
-          debugPrint('RESTORE: rollback completed');
+          _log('RESTORE: rollback completed');
         } catch (rbError) {
-          debugPrint('RESTORE rollback failed: $rbError');
+          _log('RESTORE rollback failed: $rbError');
         }
       }
 
@@ -1009,7 +1028,7 @@ class BackupService {
 
     final manifest = BackupManifest.fromJson(manifestJson);
 
-    debugPrint(
+    _log(
       'VERIFY START: ${manifest.checksums.length} components in manifest',
     );
 
@@ -1030,12 +1049,12 @@ class BackupService {
         if (isHardFail) {
           errors.add('Missing required component: ${c.component}');
           failed++;
-          debugPrint(
+          _log(
             'VERIFY FAILURE: required component ${c.component} is missing',
           );
           continue;
         }
-        debugPrint(
+        _log(
           'VERIFY OPTIONAL COMPONENT: ${c.component} is null, skipping checksum',
         );
         continue;
@@ -1052,7 +1071,7 @@ class BackupService {
       final jsonStr = _canonicalJsonEncode(dataForChecksum);
       final actual = sha256.convert(utf8.encode(jsonStr)).toString();
       if (c.component == BackupComponent.authBundle) {
-        debugPrint('AUTHBUNDLE VERIFY: computed=$actual stored=${c.sha256}');
+        _log('AUTHBUNDLE VERIFY: computed=$actual stored=${c.sha256}');
       }
       final error = manifest.verifyChecksum(
         c.component,
@@ -1063,13 +1082,13 @@ class BackupService {
         if (isHardFail) {
           errors.add(error);
           failed++;
-          debugPrint('VERIFY FAILURE: $error');
+          _log('VERIFY FAILURE: $error');
         } else {
           warnings.add('$error (soft verify — ${c.component})');
           if (c.component == BackupComponent.authBundle) {
-            debugPrint('AUTHBUNDLE SOFT VERIFY WARNING: $error');
+            _log('AUTHBUNDLE SOFT VERIFY WARNING: $error');
           } else {
-            debugPrint(
+            _log(
               'SOFT VERIFY WARNING: $error (component=${c.component})',
             );
           }
@@ -1077,7 +1096,7 @@ class BackupService {
       }
     }
 
-    debugPrint('VERIFY REQUIRED COMPONENTS: checked required components');
+    _log('VERIFY REQUIRED COMPONENTS: checked required components');
 
     // Verify blob data is not truncated (check base64 decode)
     for (final blobType in ['driveBlobs', 'attachmentBlobs']) {
@@ -1163,20 +1182,20 @@ class BackupService {
         }
         recordsChecked++;
       }
-      debugPrint('VERIFY: checked $recordsChecked $vaultType records');
+      _log('VERIFY: checked $recordsChecked $vaultType records');
     }
 
     decryptOk = true;
 
     if (failed == 0) {
-      debugPrint(
+      _log(
         'VERIFY SUCCESS: $checked components checked, ${warnings.length} warnings',
       );
       if (warnings.isNotEmpty) {
-        debugPrint('VERIFY WARNING: ${warnings.join("; ")}');
+        _log('VERIFY WARNING: ${warnings.join("; ")}');
       }
     } else {
-      debugPrint('VERIFY FAILURE: $failed/$checked components failed');
+      _log('VERIFY FAILURE: $failed/$checked components failed');
     }
 
     return BackupVerificationResult(
@@ -1390,7 +1409,7 @@ class BackupService {
         if (k.toString().contains(':folder_metadata:')) {
           if (data['backupExcluded'] == true) {
             skippedCount++;
-            debugPrint('BACKUP: skipping excluded folder metadata $k');
+            _log('BACKUP: skipping excluded folder metadata $k');
             continue;
           }
           data['_isFolderMeta'] = true;
@@ -1410,7 +1429,7 @@ class BackupService {
             final payloadStr = jsonEncode(data['payload']);
             skippedSize += utf8.encode(payloadStr).length;
           } catch (_) {}
-          debugPrint(
+          _log(
             'BACKUP: skipping excluded record $k (itemExcluded=$isExcluded, folderExcluded=$isFolderExcluded)',
           );
           continue;
@@ -1418,7 +1437,7 @@ class BackupService {
         records.add(data);
       }
     }
-    debugPrint(
+    _log(
       'BACKUP [$prefix]: included=${records.length}, skipped=$skippedCount, skippedSize=${(skippedSize / 1024).toStringAsFixed(1)}KB',
     );
     return records;
@@ -1437,7 +1456,7 @@ class BackupService {
           final record = Map<String, dynamic>.from(raw);
           if (record['backupExcluded'] == true) {
             skippedCount++;
-            debugPrint('BACKUP: skipping excluded password entry $k');
+            _log('BACKUP: skipping excluded password entry $k');
             continue;
           }
           record['_prefix'] = prefixStr;
@@ -1445,7 +1464,7 @@ class BackupService {
         }
       }
     }
-    debugPrint(
+    _log(
       'BACKUP [passwords]: included=${records.length}, skipped=$skippedCount',
     );
     return records;
@@ -1470,7 +1489,7 @@ class BackupService {
           if (k.toString().contains(':folder_metadata:')) {
             if (record['backupExcluded'] == true) {
               skippedCount++;
-              debugPrint('BACKUP: skipping excluded folder metadata $k');
+              _log('BACKUP: skipping excluded folder metadata $k');
               continue;
             }
             record['_isFolderMeta'] = true;
@@ -1487,7 +1506,7 @@ class BackupService {
           if (isExcluded || isFolderExcluded) {
             skippedCount++;
             skippedSize += (record['size'] as num?)?.toInt() ?? 0;
-            debugPrint(
+            _log(
               'BACKUP: skipping excluded drive record $k (itemExcluded=$isExcluded, folderExcluded=$isFolderExcluded)',
             );
             continue;
@@ -1497,7 +1516,7 @@ class BackupService {
         }
       }
     }
-    debugPrint(
+    _log(
       'BACKUP [drive]: included=${records.length}, skipped=$skippedCount, skippedSize=${(skippedSize / (1024 * 1024)).toStringAsFixed(1)}MB',
     );
     return records;
@@ -1510,6 +1529,10 @@ class BackupService {
       'gdriveTokenExpiry',
       'gdriveEmail',
       'lastGoogleBackupAt',
+      'megaSessionId',
+      'megaEmail',
+      'lastMegaBackupAt',
+      'cloudProvider',
       'deviceId',
     };
     for (final k in box.keys) {
@@ -1545,7 +1568,7 @@ class BackupService {
           // Only backup blobs that are in the filtered metadata
           final meta = metadata.firstWhere((m) => m['id'] == id, orElse: () => {});
           if (meta.isEmpty) {
-            debugPrint('BACKUP: skipping excluded drive blob $id');
+            _log('BACKUP: skipping excluded drive blob $id');
             continue;
           }
 
@@ -1578,7 +1601,7 @@ class BackupService {
                             recordKey,
                           )
                           : crypto.encryptBytes(compressed, recordKey);
-                  debugPrint('BACKUP OPTIMIZATION: compressed $originalName');
+                  _log('BACKUP OPTIMIZATION: compressed $originalName');
                 }
               }
             }
@@ -1591,7 +1614,7 @@ class BackupService {
             'size': bytes.length,
           });
         } catch (e) {
-          debugPrint('BACKUP: failed to read drive blob ${file.path}: $e');
+          _log('BACKUP: failed to read drive blob ${file.path}: $e');
         }
       }
     }
@@ -1613,7 +1636,7 @@ class BackupService {
       try {
         final id = file.uri.pathSegments.last.replaceAll('.vxblob', '');
         if (!allowedIds.contains(id)) {
-          debugPrint('BACKUP: skipping excluded attachment blob $id');
+          _log('BACKUP: skipping excluded attachment blob $id');
           continue;
         }
 
@@ -1625,7 +1648,7 @@ class BackupService {
           'size': bytes.length,
         });
       } catch (e) {
-        debugPrint('BACKUP: failed to read attachment blob ${file.path}: $e');
+        _log('BACKUP: failed to read attachment blob ${file.path}: $e');
       }
     }
     return blobs;
@@ -1654,7 +1677,7 @@ class BackupService {
         }
       }
     }
-    debugPrint('RESTORE settings: restored=$restored, skipped=$skipped');
+    _log('RESTORE settings: restored=$restored, skipped=$skipped');
   }
 
   Future<int> _clearRestoreTargets() async {
@@ -1739,7 +1762,7 @@ class BackupService {
       }
     }
     final totalPreserved = preservedNotes + preservedDrive + preservedPasswords;
-    debugPrint(
+    _log(
       'RESTORE: replace mode cleared targets (preserved: $preservedNotes notes, $preservedDrive drive, $preservedPasswords passwords, total=$totalPreserved)',
     );
     return totalPreserved;
@@ -1757,19 +1780,22 @@ class BackupService {
     String prefix,
     Uint8List mainMasterKey,
     RestoreMode mode,
-    void Function(int processed) onProgress,
-  ) async {
+    void Function(int processed) onProgress, {
+    Uint8List? targetMasterKey,
+  }) async {
     final box = Hive.box('vaultx_records');
+    final crypto = CryptoService();
     var processed = 0;
     var restored = 0;
 
     for (final record in records) {
       final bool isFolderMeta = record['_isFolderMeta'] == true;
-      final String recordId = isFolderMeta ? record['name'] as String : record['id'] as String;
+      final recordId = isFolderMeta ? record['name']?.toString() : record['id']?.toString();
+      if (recordId == null) continue;
       final key = isFolderMeta ? '$prefix:folder_metadata:$recordId' : '$prefix:$recordId';
 
       if (mode == RestoreMode.merge && box.containsKey(key)) {
-        debugPrint('RESTORE: skipped existing $prefix ${isFolderMeta ? "folder" : "vault"} record $recordId');
+        _log('RESTORE: skipped existing $prefix ${isFolderMeta ? "folder" : "vault"} record $recordId');
         processed++;
         continue;
       }
@@ -1782,11 +1808,28 @@ class BackupService {
       } else if (record.containsKey('salt') &&
           record.containsKey('payload') &&
           record.containsKey('id')) {
+        // Re-encrypt with target master key if different (cross-device merge)
+        if (targetMasterKey != null && !_keysEqual(targetMasterKey, mainMasterKey)) {
+          try {
+            final salt = record['salt'] as String;
+            final payload = record['payload'] as Map<String, dynamic>;
+            final oldKey = crypto.deriveRecordKey(mainMasterKey, recordId, salt);
+            final plaintext = crypto.decryptJson(payload, oldKey);
+            crypto.wipe(oldKey);
+            final newKey = crypto.deriveRecordKey(targetMasterKey, recordId, salt);
+            record['payload'] = crypto.encryptJson(plaintext, newKey);
+            crypto.wipe(newKey);
+          } catch (e) {
+            _log('RESTORE: failed to re-encrypt $prefix vault record $recordId: $e — skipping');
+            processed++;
+            continue;
+          }
+        }
         await box.put(key, record);
         await AuditLog.write('Restored $prefix vault record $recordId');
         restored++;
       } else {
-        debugPrint('RESTORE: invalid $prefix vault record $recordId');
+        _log('RESTORE: invalid $prefix vault record $recordId');
       }
 
       processed++;
@@ -1804,14 +1847,15 @@ class BackupService {
     var restored = 0;
     for (final record in records) {
       final bool isFolderMeta = record['_isFolderMeta'] == true;
-      final String recordId = isFolderMeta ? record['name'] as String : record['id'] as String;
+      final recordId = isFolderMeta ? record['name']?.toString() : record['id']?.toString();
+      if (recordId == null) continue;
       
       String prefix = 'main';
       if (record['_prefix'] == 'hidden') prefix = 'hidden';
       final key = isFolderMeta ? '$prefix:folder_metadata:$recordId' : '$prefix:$recordId';
 
       if (mode == RestoreMode.merge && box.containsKey(key)) {
-        debugPrint('RESTORE: skipped existing drive ${isFolderMeta ? "folder" : "metadata"} $key');
+        _log('RESTORE: skipped existing drive ${isFolderMeta ? "folder" : "metadata"} $key');
         continue;
       }
 
@@ -1827,7 +1871,7 @@ class BackupService {
           restored++;
         }
       } catch (e) {
-        debugPrint('RESTORE: failed to restore drive metadata $recordId: $e');
+        _log('RESTORE: failed to restore drive metadata $recordId: $e');
       }
     }
     return restored;
@@ -1837,6 +1881,7 @@ class BackupService {
     List<Map<String, dynamic>> blobs,
     Uint8List mainMasterKey,
     String blobType,
+    RestoreMode mode,
     void Function(int processed) onProgress,
   ) async {
     final docDir = await getApplicationDocumentsDirectory();
@@ -1847,6 +1892,17 @@ class BackupService {
       try {
         final blobId = blob['id'] as String;
         final data = base64Decode(blob['data'] as String);
+
+        // Verify blob integrity before writing
+        if (data.isNotEmpty) {
+          final header = utf8.decode(data.take(7).toList());
+          if (header != 'VXBLOB2' && header != 'VXBLOB1') {
+            _log('RESTORE: blob $blobId has invalid header: $header — skipping');
+            processed++;
+            continue;
+          }
+        }
+
         var dirName = blob['blobDir'] as String?;
         dirName ??= blobType == 'drive' ? 'vaultx_drive_main' : 'vaultx_blobs';
 
@@ -1854,13 +1910,13 @@ class BackupService {
         await dir.create(recursive: true);
 
         final blobPath = '${dir.path}/$blobId.vxblob';
-        if (File(blobPath).existsSync()) continue;
+        if (mode == RestoreMode.merge && File(blobPath).existsSync()) continue;
 
         await File(blobPath).writeAsBytes(data, flush: true);
         await AuditLog.write('Restored $blobType blob $blobId');
         restored++;
       } catch (e) {
-        debugPrint('RESTORE: failed to restore $blobType blob: $e');
+        _log('RESTORE: failed to restore $blobType blob: $e');
       }
 
       processed++;
@@ -1891,44 +1947,93 @@ class BackupService {
         restored++;
       }
     }
-    debugPrint('RESTORE passwordEntries: $restored entries restored');
+    _log('RESTORE passwordEntries: $restored entries restored');
     return restored;
   }
 
+  /// Collects paths of existing blob files before restore for rollback cleanup.
+  Future<List<String>> _collectExistingBlobPaths() async {
+    final docDir = await getApplicationDocumentsDirectory();
+    final paths = <String>[];
+    for (final dirName in ['vaultx_drive_main', 'vaultx_drive_hidden', 'vaultx_blobs']) {
+      final dir = Directory('${docDir.path}/$dirName');
+      if (!await dir.exists()) continue;
+      await for (final entity in dir.list()) {
+        if (entity is File && entity.path.endsWith('.vxblob')) {
+          paths.add(entity.path);
+        }
+      }
+    }
+    return paths;
+  }
+
   Future<void> _rollback(
-    Map<String, List<Map<String, dynamic>>> snapshot,
+    Map<String, dynamic> snapshot,
     Uint8List mainMasterKey,
   ) async {
     final recordsBox = Hive.box('vaultx_records');
     final driveBox = Hive.box('vaultx_drive');
 
     if (snapshot.containsKey('mainVault')) {
+      final mainVault = (snapshot['mainVault'] as List?)?.cast<Map<String, dynamic>>() ?? [];
       for (final k in recordsBox.keys) {
         if (k.toString().startsWith('main:')) {
           await recordsBox.delete(k);
         }
       }
-      for (final record in snapshot['mainVault']!) {
-        await recordsBox.put('main:${record['id']}', record);
+      for (final record in mainVault) {
+        final isFolderMeta = record['_isFolderMeta'] == true;
+        final recordId = isFolderMeta ? record['name']?.toString() : record['id']?.toString();
+        if (recordId == null) continue;
+        final key = isFolderMeta ? 'main:folder_metadata:$recordId' : 'main:$recordId';
+        await recordsBox.put(key, record);
       }
     }
 
     if (snapshot.containsKey('hiddenVault')) {
+      final hiddenVault = (snapshot['hiddenVault'] as List?)?.cast<Map<String, dynamic>>() ?? [];
       for (final k in recordsBox.keys) {
         if (k.toString().startsWith('hidden:')) {
           await recordsBox.delete(k);
         }
       }
-      for (final record in snapshot['hiddenVault']!) {
-        await recordsBox.put('hidden:${record['id']}', record);
+      for (final record in hiddenVault) {
+        final isFolderMeta = record['_isFolderMeta'] == true;
+        final recordId = isFolderMeta ? record['name']?.toString() : record['id']?.toString();
+        if (recordId == null) continue;
+        final key = isFolderMeta ? 'hidden:folder_metadata:$recordId' : 'hidden:$recordId';
+        await recordsBox.put(key, record);
       }
     }
 
     if (snapshot.containsKey('driveMetadata')) {
+      final driveMeta = (snapshot['driveMetadata'] as List?)?.cast<Map<String, dynamic>>() ?? [];
       await driveBox.clear();
-      for (final record in snapshot['driveMetadata']!) {
+      for (final record in driveMeta) {
         final prefix = record['_prefix'] == 'hidden' ? 'hidden' : 'main';
-        await driveBox.put('$prefix:${record['id']}', record);
+        final isFolderMeta = record['_isFolderMeta'] == true;
+        final recordId = isFolderMeta ? record['name']?.toString() : record['id']?.toString();
+        if (recordId == null) continue;
+        final key = isFolderMeta ? '$prefix:folder_metadata:$recordId' : '$prefix:$recordId';
+        await driveBox.put(key, record);
+      }
+    }
+
+    // Clean up blob files that were created during the failed restore
+    final existingBlobs = (snapshot['_existingBlobs'] as List?)?.cast<String>() ?? <String>[];
+    final docDir = await getApplicationDocumentsDirectory();
+    for (final dirName in ['vaultx_drive_main', 'vaultx_drive_hidden', 'vaultx_blobs']) {
+      final dir = Directory('${docDir.path}/$dirName');
+      if (!await dir.exists()) continue;
+      await for (final entity in dir.list()) {
+        if (entity is File && entity.path.endsWith('.vxblob') && !existingBlobs.contains(entity.path)) {
+          try {
+            await entity.delete();
+            _log('ROLLBACK: deleted orphaned blob ${entity.path}');
+          } catch (e) {
+            _log('ROLLBACK: failed to delete orphaned blob ${entity.path}: $e');
+          }
+        }
       }
     }
   }
@@ -1964,12 +2069,12 @@ class BackupService {
         portable[key] = authBundle[key];
       }
     }
-    debugPrint(
+    _log(
       'AUTHBUNDLE SANITIZER: ${authBundle.length} input fields → ${portable.length} portable fields kept',
     );
     final removed = authBundle.length - portable.length;
     if (removed > 0) {
-      debugPrint(
+      _log(
         'AUTHBUNDLE SANITIZER: stripped $removed volatile/runtime fields',
       );
     }
@@ -1988,7 +2093,7 @@ class BackupService {
   /// KDF params) was already restored via importAuthBundle — this method
   /// handles everything else that is device-specific.
   Future<void> _reinitializeRuntimeAuthState() async {
-    debugPrint('AUTHBUNDLE RUNTIME STATE REGENERATED');
+    _log('AUTHBUNDLE RUNTIME STATE REGENERATED');
     // Runtime auth state is regenerated on next unlock.
     // Keystore aliases, biometric bindings, and secure storage refs
     // are created lazily when the user authenticates.
@@ -2026,7 +2131,7 @@ class BackupService {
     try {
       return _secureStorage.read(key: key);
     } catch (e) {
-      debugPrint('STORAGE RECOVERY: backup read failed for $key: $e');
+      _log('STORAGE RECOVERY: backup read failed for $key: $e');
       return null;
     }
   }
@@ -2035,8 +2140,16 @@ class BackupService {
     try {
       await _secureStorage.write(key: key, value: value);
     } catch (e) {
-      debugPrint('STORAGE RECOVERY: backup write failed for $key: $e');
+      _log('STORAGE RECOVERY: backup write failed for $key: $e');
     }
+  }
+
+  bool _keysEqual(Uint8List a, Uint8List b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   int _estimateTotalSize(Map<String, dynamic> data) {

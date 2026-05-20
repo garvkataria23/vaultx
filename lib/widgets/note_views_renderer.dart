@@ -16,6 +16,7 @@ enum NoteViewMode {
   folder,
   gallery,
   calendar,
+  smart,
 }
 
 const Map<NoteViewMode, IconData> noteViewIcons = {
@@ -28,6 +29,7 @@ const Map<NoteViewMode, IconData> noteViewIcons = {
   NoteViewMode.folder: Icons.folder_copy_rounded,
   NoteViewMode.gallery: Icons.photo_library_rounded,
   NoteViewMode.calendar: Icons.calendar_month_rounded,
+  NoteViewMode.smart: Icons.auto_awesome_mosaic_rounded,
 };
 
 const Map<NoteViewMode, String> noteViewNames = {
@@ -40,6 +42,7 @@ const Map<NoteViewMode, String> noteViewNames = {
   NoteViewMode.folder: 'Folders',
   NoteViewMode.gallery: 'Gallery',
   NoteViewMode.calendar: 'Calendar',
+  NoteViewMode.smart: 'Smart View',
 };
 
 class NoteViewsRenderer extends StatefulWidget {
@@ -158,9 +161,71 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
       case NoteViewMode.calendar:
         content = _buildCalendar();
         break;
+      case NoteViewMode.smart:
+        content = _buildSmart();
+        break;
     }
 
     return content;
+  }
+
+  Widget _buildSmart() {
+    final analyzer = NoteAnalyzerService();
+    final grouped = analyzer.groupByCategory(widget.notes);
+    
+    // Sort categories: put General at the end, and non-empty categories first
+    final sortedCategories = NoteCategory.values.toList()
+      ..sort((a, b) {
+        if (a == NoteCategory.general) return 1;
+        if (b == NoteCategory.general) return -1;
+        
+        final aCount = grouped[a]?.length ?? 0;
+        final bCount = grouped[b]?.length ?? 0;
+        
+        if (aCount > 0 && bCount == 0) return -1;
+        if (aCount == 0 && bCount > 0) return 1;
+        
+        return a.name.compareTo(b.name);
+      });
+
+    return ListView.builder(
+      key: const PageStorageKey('smart_view'),
+      controller: _scrollController,
+      padding: const EdgeInsets.all(12),
+      itemCount: sortedCategories.length,
+      itemBuilder: (ctx, i) {
+        final category = sortedCategories[i];
+        final notes = grouped[category] ?? [];
+        if (notes.isEmpty) return const SizedBox.shrink();
+
+        final meta = SmartOrganizationService.getCategoryMetadata(category);
+        final cs = Theme.of(context).colorScheme;
+
+        return Card(
+          margin: const EdgeInsets.only(bottom: 12),
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.5)),
+          ),
+          child: ExpansionTile(
+            key: PageStorageKey('cat_${category.name}'),
+            leading: Text(meta.icon, style: const TextStyle(fontSize: 24)),
+            title: Text(
+              meta.label,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            subtitle: Text(
+              '${notes.length} notes \u2022 ${meta.description}',
+              style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+            ),
+            shape: const RoundedRectangleBorder(side: BorderSide.none),
+            childrenPadding: const EdgeInsets.only(bottom: 8),
+            children: notes.map((n) => _buildCard(n, isDetailed: true)).toList(),
+          ),
+        );
+      },
+    );
   }
 
   Widget _buildCard(SecureNote note, {bool isGrid = false, bool isCompact = false, bool isDetailed = false}) {

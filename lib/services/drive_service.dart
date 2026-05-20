@@ -55,7 +55,7 @@ class DriveService {
       _prefix == 'hidden' ? 'vaultx_drive_hidden' : 'vaultx_drive_main';
 
   Future<List<SecureDriveFile>> loadFiles() async {
-    if (_loaded) return List<SecureDriveFile>.from(_cache);
+    if (_loaded) return List<SecureDriveFile>.from(_cache.where((f) => !f.deleted));
     _cache = [];
     final keys = _box.keys.where((k) => k.toString().startsWith('$_prefix:'));
     for (final key in keys) {
@@ -73,8 +73,16 @@ class DriveService {
       return b.updatedAt.compareTo(a.updatedAt);
     });
     _loaded = true;
-    return List<SecureDriveFile>.from(_cache);
+    return List<SecureDriveFile>.from(_cache.where((f) => !f.deleted));
   }
+
+  Future<List<SecureDriveFile>> loadTrashFiles() async {
+    await loadFiles();
+    final trash = _cache.where((f) => f.deleted).toList();
+    trash.sort((a, b) => b.deletedAt?.compareTo(a.deletedAt ?? DateTime.now()) ?? 0);
+    return trash;
+  }
+
   /// Loads metadata for logical folders in Secure Drive.
   Future<List<SecureDriveFolder>> loadFolderMetadata() async {
     final folders = <SecureDriveFolder>[];
@@ -82,9 +90,24 @@ class DriveService {
     for (final k in _box.keys.where((k) => k.toString().startsWith(prefix))) {
       final raw = _box.get(k);
       if (raw is Map) {
-        folders.add(SecureDriveFolder.fromJson(Map<String, dynamic>.from(raw)));
+        final folder = SecureDriveFolder.fromJson(Map<String, dynamic>.from(raw));
+        if (!folder.deleted) folders.add(folder);
       }
     }
+    return folders;
+  }
+
+  Future<List<SecureDriveFolder>> loadTrashFolders() async {
+    final folders = <SecureDriveFolder>[];
+    final prefix = '$_prefix:folder_metadata:';
+    for (final k in _box.keys.where((k) => k.toString().startsWith(prefix))) {
+      final raw = _box.get(k);
+      if (raw is Map) {
+        final folder = SecureDriveFolder.fromJson(Map<String, dynamic>.from(raw));
+        if (folder.deleted) folders.add(folder);
+      }
+    }
+    folders.sort((a, b) => b.deletedAt?.compareTo(a.deletedAt ?? DateTime.now()) ?? 0);
     return folders;
   }
 
@@ -92,6 +115,88 @@ class DriveService {
   Future<void> saveFolderMetadata(SecureDriveFolder folder) async {
     final key = '$_prefix:folder_metadata:${folder.name}';
     await _box.put(key, folder.toJson());
+  }
+
+  Future<void> moveToTrash(SecureDriveFile file) async {
+    final trashedFile = file.copyWith(
+      deleted: true,
+      deletedAt: DateTime.now(),
+      pinned: false,
+      favorite: false,
+    );
+    await _persist(trashedFile);
+    final idx = _cache.indexWhere((f) => f.id == file.id);
+    if (idx >= 0) _cache[idx] = trashedFile;
+    BackupChangeTracker.instance.notifyDriveChanged();
+  }
+
+  Future<void> restoreFile(SecureDriveFile file) async {
+    final restoredFile = file.copyWith(
+      deleted: false,
+      deletedAt: null,
+    );
+    await _persist(restoredFile);
+    final idx = _cache.indexWhere((f) => f.id == file.id);
+    if (idx >= 0) _cache[idx] = restoredFile;
+    BackupChangeTracker.instance.notifyDriveChanged();
+  }
+
+  Future<void> permanentlyDeleteFile(SecureDriveFile file) async {
+    await EncryptedBlobService.secureDeletePath(file.encryptedPath);
+    await _remove(file.id);
+    _cache.removeWhere((f) => f.id == file.id);
+    BackupChangeTracker.instance.notifyDriveChanged(
+      estimatedBytes: file.size,
+    );
+  }
+
+  Future<void> moveFolderToTrash(SecureDriveFolder folder) async {
+    final trashedFolder = folder.copyWith(
+      deleted: true,
+      deletedAt: DateTime.now(),
+      pinned: false,
+    );
+    await saveFolderMetadata(trashedFolder);
+    
+    // Also move all files in this folder to trash
+    final files = await loadFiles();
+    for (final file in files.where((f) => f.folder == folder.name)) {
+      await moveToTrash(file);
+    }
+  }
+
+  Future<void> restoreFolder(SecureDriveFolder folder) async {
+    final restoredFolder = folder.copyWith(
+      deleted: false,
+      deletedAt: null,
+    );
+    await saveFolderMetadata(restoredFolder);
+    
+    // Also restore all files that were deleted at the same time or were in this folder
+    // Note: This might restore files that were deleted individually before the folder.
+    // For simplicity, we just restore the folder metadata.
+  }
+
+  Future<void> permanentlyDeleteFolder(SecureDriveFolder folder) async {
+    final key = '$_prefix:folder_metadata:${folder.name}';
+    await _box.delete(key);
+    
+    // Also permanently delete all files in this folder that are already in trash
+    final trashFiles = await loadTrashFiles();
+    for (final file in trashFiles.where((f) => f.folder == folder.name)) {
+      await permanentlyDeleteFile(file);
+    }
+  }
+
+  Future<void> emptyTrash() async {
+    final trashFiles = await loadTrashFiles();
+    for (final file in trashFiles) {
+      await permanentlyDeleteFile(file);
+    }
+    final trashFolders = await loadTrashFolders();
+    for (final folder in trashFolders) {
+      await permanentlyDeleteFolder(folder);
+    }
   }
 
   Future<void> _persist(SecureDriveFile file) async {

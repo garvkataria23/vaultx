@@ -7,6 +7,8 @@ class SecureDriveFolder {
     this.archivedAt,
     this.backupExcluded = false,
     this.isLocked = false,
+    this.deleted = false,
+    this.deletedAt,
   });
 
   final String name;
@@ -16,6 +18,8 @@ class SecureDriveFolder {
   DateTime? archivedAt;
   bool backupExcluded;
   bool isLocked;
+  bool deleted;
+  DateTime? deletedAt;
 
   SecureDriveFolder copyWith({
     String? name,
@@ -25,6 +29,8 @@ class SecureDriveFolder {
     DateTime? archivedAt,
     bool? backupExcluded,
     bool? isLocked,
+    bool? deleted,
+    DateTime? deletedAt,
   }) {
     return SecureDriveFolder(
       name: name ?? this.name,
@@ -34,13 +40,18 @@ class SecureDriveFolder {
       archivedAt: archivedAt ?? this.archivedAt,
       backupExcluded: backupExcluded ?? this.backupExcluded,
       isLocked: isLocked ?? this.isLocked,
+      deleted: deleted ?? this.deleted,
+      deletedAt: deletedAt ?? this.deletedAt,
     );
   }
 
   bool get isLocalOnly => backupExcluded;
 
   /// Returns true if this folder should be included in a backup.
-  bool shouldIncludeInBackup() => !backupExcluded;
+  bool shouldIncludeInBackup() {
+    if (deleted) return false;
+    return !backupExcluded;
+  }
 
   Map<String, dynamic> toJson() => {
     'name': name,
@@ -50,6 +61,8 @@ class SecureDriveFolder {
     'archivedAt': archivedAt?.toIso8601String(),
     'backupExcluded': backupExcluded,
     'isLocked': isLocked,
+    'deleted': deleted,
+    'deletedAt': deletedAt?.toIso8601String(),
   };
 
   static SecureDriveFolder fromJson(Map<String, dynamic> json) =>
@@ -63,6 +76,10 @@ class SecureDriveFolder {
             : null,
         backupExcluded: json['backupExcluded'] as bool? ?? false,
         isLocked: json['isLocked'] as bool? ?? false,
+        deleted: json['deleted'] as bool? ?? false,
+        deletedAt: json['deletedAt'] != null
+            ? DateTime.tryParse(json['deletedAt'] as String? ?? '')
+            : null,
       );
 }
 
@@ -85,6 +102,8 @@ class SecureDriveFile {
     this.archived = false,
     this.archivedAt,
     this.backupExcluded = false,
+    this.deleted = false,
+    this.deletedAt,
   }) : createdAt = createdAt ?? DateTime.now(),
        updatedAt = updatedAt ?? DateTime.now();
 
@@ -105,6 +124,8 @@ class SecureDriveFile {
   bool archived;
   DateTime? archivedAt;
   bool backupExcluded;
+  bool deleted;
+  DateTime? deletedAt;
 
   SecureDriveFile copyWith({
     String? name,
@@ -122,6 +143,8 @@ class SecureDriveFile {
     DateTime? archivedAt,
     bool? backupExcluded,
     DateTime? updatedAt,
+    bool? deleted,
+    DateTime? deletedAt,
   }) {
     return SecureDriveFile(
       id: id,
@@ -141,6 +164,8 @@ class SecureDriveFile {
       archived: archived ?? this.archived,
       archivedAt: archivedAt ?? this.archivedAt,
       backupExcluded: backupExcluded ?? this.backupExcluded,
+      deleted: deleted ?? this.deleted,
+      deletedAt: deletedAt ?? this.deletedAt,
     );
   }
 
@@ -149,6 +174,7 @@ class SecureDriveFile {
   /// Returns true if this file should be included in a backup.
   /// If [folderExcluded] is provided, it can be used to implement inheritance.
   bool shouldIncludeInBackup({bool folderExcluded = false}) {
+    if (deleted) return false;
     if (backupExcluded) return false;
     if (folderExcluded) return false;
     return true;
@@ -280,6 +306,10 @@ class SecureDriveFile {
           ? DateTime.tryParse(json['archivedAt'] as String)
           : null,
       backupExcluded: json['backupExcluded'] as bool? ?? false,
+      deleted: json['deleted'] as bool? ?? false,
+      deletedAt: json['deletedAt'] != null
+          ? DateTime.tryParse(json['deletedAt'] as String? ?? '')
+          : null,
     );
   }
 }

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../models/models.dart';
 import 'note_analyzer.dart';
+import 'search_index_service.dart';
 import 'smart_indexer.dart';
 
 /// High-level search orchestrator that combines indexing, analysis, and filters.
@@ -28,6 +29,14 @@ class SearchService {
   /// Await until the service is fully initialized.
   Future<void> get ready => _readyCompleter?.future ?? Future.value();
 
+  /// Pre-filter notes using the persistent search index for faster queries.
+  List<SecureNote> _prefilterByIndex(List<SecureNote> notes, String query) {
+    if (query.isEmpty) return notes;
+    final matchedIds = SearchIndexService.instance.search(query);
+    if (matchedIds.isEmpty) return notes;
+    return notes.where((n) => matchedIds.contains(n.id)).toList();
+  }
+
   /// Perform a search with optional category awareness.
   ///
   /// Returns matches sorted by relevance. Pass [allNotes] when available
@@ -45,7 +54,13 @@ class SearchService {
       return results;
     }
 
-    final filtered = _applyCategoryFilter(notes, filters);
+    // Fast-path: use persistent index to narrow candidate pool by query.
+    var candidates = notes;
+    if (filters.query.isNotEmpty) {
+      candidates = _prefilterByIndex(notes, filters.query);
+    }
+
+    final filtered = _applyCategoryFilter(candidates, filters);
     return SmartIndexerService.search(filtered, filters);
   }
 

@@ -10,8 +10,8 @@ import '../models/backup.dart';
 import 'audit_log.dart';
 import 'auth_service.dart';
 import 'backup_service.dart';
+import 'cloud_storage_provider.dart';
 import 'crypto_service.dart';
-import 'google_drive_backup.dart';
 
 /// Callback for restore progress reporting.
 typedef RestoreProgressCallback = void Function(RestoreProgress progress);
@@ -41,7 +41,7 @@ class RestoreService {
   });
 
   final VaultAuthService authService;
-  final GoogleDriveBackupService driveService;
+  final CloudStorageProvider driveService;
   final Uint8List masterKey;
   final VaultKind kind;
   final RestoreProgressCallback? onProgress;
@@ -62,7 +62,7 @@ class RestoreService {
     _report(const RestoreProgress(
       stage: RestoreStage.detecting,
       fraction: 0.0,
-      componentName: 'Checking Google Drive...',
+      componentName: 'Checking cloud backup...',
     ));
 
     try {
@@ -297,6 +297,7 @@ class RestoreService {
         info.backupData,
         mode: mode,
         mainMasterKey: info.masterKey,
+        targetMasterKey: masterKey, // Current device's master key
       );
 
       if (result.success) {
@@ -340,10 +341,6 @@ class RestoreService {
   Future<void> cancelRestore(RestoreInfo info) async {
     debugPrint('RESTORE CANCELLED: cleaning up');
     _detectedVersion = null;
-    // Wipe the recovered master key from memory
-    for (var i = 0; i < info.masterKey.length; i++) {
-      info.masterKey[i] = 0;
-    }
   }
 
   /// Verify the vault password against the backup's auth bundle.
@@ -450,11 +447,11 @@ class RestoreService {
     if (msg.contains('FormatException')) {
       return 'Corrupted backup data. The backup file may be damaged.';
     }
-    if (msg.contains('InvalidCipherTextException') || msg.contains('FormatException')) {
+    if (msg.contains('InvalidCipherTextException')) {
       return 'Wrong vault password or corrupted backup data.';
     }
     if (msg.contains('google_sign_in') || msg.contains('auth')) {
-      return 'Google authentication expired. Please sign in again.';
+      return 'Cloud authentication expired. Please sign in again.';
     }
     if (msg.contains('checksum') || msg.contains('mismatch')) {
       return 'Backup integrity check failed. The backup may be corrupted.';

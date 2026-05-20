@@ -89,6 +89,19 @@ flutter {
 
 dependencies {
 
+    // AndroidX Security (EncryptedSharedPreferences)
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // MegaSDK JAR
+    implementation(files("libs/MegaSDK.jar"))
+
+    // MEGA Android SDK — built from source and placed as a local AAR
+    // Build instructions: https://github.com/meganz/sdk
+    // 1. Clone https://github.com/meganz/sdk
+    // 2. Follow Android build steps in bindings/java/
+    // 3. Copy the resulting .aar to android/app/libs/
+    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
+
     // ML Kit Base
     implementation("com.google.mlkit:text-recognition:16.0.1")
 

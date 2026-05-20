@@ -29,7 +29,10 @@ class SecureDeleteService {
 
       // 2. Cloud/Drive Cleanup
       onProgress('Cleaning up cloud backups...');
-      final gdriveService = GoogleDriveBackupService(authService: authService);
+      final gdriveService = GoogleDriveBackupService(
+        authService: authService,
+        masterKey: verified.masterKey,
+      );
       final signedIn = await gdriveService.signInSilently();
       if (signedIn) {
         await gdriveService.deleteAllBackups();

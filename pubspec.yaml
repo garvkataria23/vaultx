@@ -69,6 +69,8 @@ dependencies:
   simple_pdf_compression: ^0.0.2
   syncfusion_flutter_pdf: ^33.2.6
   flutter_markdown_plus: ^1.0.7
+  vosk_flutter_service: ^0.1.1
+  webview_flutter: ^4.10.0
   
 
 dev_dependencies:

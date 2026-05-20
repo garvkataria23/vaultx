@@ -151,6 +151,7 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _checkForRestoreAfterLogin(AuthResult result) async {
     // Only check for main vault (not hidden/decoy on login)
     if (result.kind != VaultKind.main) {
+      debugPrint('LOGIN_RESTORE: Skipping check for ${result.kind} vault');
       _navigateHome(result);
       return;
     }
@@ -158,12 +159,12 @@ class _LoginScreenState extends State<LoginScreen> {
     // Check if this is a fresh setup (no local data = potential new device)
     final hasLocalData = _hasLocalVaultData();
     if (hasLocalData) {
-      debugPrint(
-        'LOGIN RESTORE CHECK: local data exists, skipping auto-restore',
-      );
+      debugPrint('LOGIN_RESTORE: Local data exists, skipping auto-restore check');
       _navigateHome(result);
       return;
     }
+
+    debugPrint('LOGIN_RESTORE: No local data, checking for cloud backups...');
 
     // Check if auto-restore is enabled in settings
     final autoRestore =
@@ -172,21 +173,30 @@ class _LoginScreenState extends State<LoginScreen> {
 
     // Try to detect backup silently
     try {
-      final driveService = GoogleDriveBackupService(authService: widget.auth);
-      final restored = await driveService.restoreSession();
-      if (restored == null) {
-        debugPrint('LOGIN RESTORE CHECK: no Google session, skipping');
+      final driveService = GoogleDriveBackupService(
+        authService: widget.auth,
+        masterKey: result.masterKey,
+      );
+      
+      debugPrint('LOGIN_RESTORE: Attempting silent Drive session restoration...');
+      final restoredEmail = await driveService.restoreSession();
+      
+      if (restoredEmail == null) {
+        debugPrint('LOGIN_RESTORE: No active Google session found, skipping');
         _navigateHome(result);
         return;
       }
 
+      debugPrint('LOGIN_RESTORE: Google session restored for $restoredEmail. Checking for backups...');
       final hasBackup = await driveService.hasBackup();
+      
       if (!hasBackup) {
-        debugPrint('LOGIN RESTORE CHECK: no backup on Drive');
+        debugPrint('LOGIN_RESTORE: No VaultX backups found on Google Drive for $restoredEmail');
         _navigateHome(result);
         return;
       }
 
+      debugPrint('LOGIN_RESTORE: Backup found! Prompting user for restore...');
       if (!mounted) return;
 
       // Backup found — show restore prompt
@@ -200,6 +210,7 @@ class _LoginScreenState extends State<LoginScreen> {
             autoRestore: autoRestore,
             onComplete: (success) {
               if (success) {
+                debugPrint('LOGIN_RESTORE: Restore completed successfully via RestoreScreen');
                 FloatingNotificationService.instance.show(
                   'Vault data restored successfully',
                 );
@@ -213,6 +224,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
       if (popResult != null && _isBase64MasterKey(popResult)) {
         // Restore completed successfully — use the backup's master key
+        debugPrint('LOGIN_RESTORE: Using restored master key');
         final masterKey = base64Decode(popResult);
         final pendingResult = AuthResult.pending(
           masterKey,
@@ -225,10 +237,12 @@ class _LoginScreenState extends State<LoginScreen> {
         }
       } else {
         // Restore was skipped or cancelled — use original result
+        debugPrint('LOGIN_RESTORE: Restore was skipped or cancelled by user');
         _navigateHome(result);
       }
-    } catch (e) {
-      debugPrint('LOGIN RESTORE CHECK ERROR: $e');
+    } catch (e, st) {
+      debugPrint('LOGIN_RESTORE_ERROR: Failed during auto-restore check: $e');
+      debugPrint('$st');
       if (mounted) _navigateHome(result);
     }
   }

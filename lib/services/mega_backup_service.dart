@@ -1,0 +1,522 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:math';
+
+import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+
+import '../models/backup.dart';
+import 'auth_service.dart';
+import 'base_cloud_backup_provider.dart';
+import 'mega_sdk_service.dart';
+
+class MEGABackupService extends BaseCloudBackupProvider {
+  MEGABackupService({this.masterKey, this.authService});
+
+  @override
+  final Uint8List? masterKey;
+  @override
+  final VaultAuthService? authService;
+
+  final MegaSdkService _sdk = MegaSdkService.instance;
+  String? _cachedEmail;
+  String? lastError;
+
+  static const _secureStorage = FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
+
+  static const String _keySessionId = 'megaSdkSession';
+  static const String _keyEmail = 'megaSdkEmail';
+
+  @override
+  bool get isAuthenticated => _cachedEmail != null;
+
+  @override
+  String? get signedInEmail => _cachedEmail;
+
+  @override
+  bool get hasValidSession => _cachedEmail != null;
+
+  @override
+  String get providerName => 'MEGA';
+
+  @override
+  CloudProvider get providerType => CloudProvider.mega;
+
+  @override
+  String? get accountLabel => signedInEmail;
+
+  @override
+  String? get lastBackupAt =>
+      Hive.box('vaultx_settings').get('lastMegaBackupAt') as String?;
+
+  // ── Authentication ──────────────────────────────────────────────────────
+
+  @override
+  Future<String?> restoreSession() async {
+    if (_cachedEmail != null) return _cachedEmail;
+    final success = await signInSilently();
+    return success ? _cachedEmail : null;
+  }
+
+  @override
+  Future<bool> ensureAuthenticated() async {
+    if (_cachedEmail != null) return true;
+
+    // Try health check first — maybe SDK is still logged in from native side
+    final loggedIn = await _sdk.isLoggedIn();
+    if (loggedIn) {
+      debugPrint('MEGA CONNECTION HEALTH: SDK reports logged in');
+      final nodesOk = await _sdk.fetchNodes();
+      if (nodesOk['success'] == true) {
+        // Fetch the email from SDK
+        final email = await _sdk.getSessionEmail();
+        if (email != null) {
+          _cachedEmail = email;
+          await _saveSession(null, email);
+          debugPrint('MEGA AUTO RECONNECTED — session restored from native');
+          return true;
+        }
+      }
+    }
+
+    return await signInSilently();
+  }
+
+  @override
+  Future<bool> signInSilently() async {
+    final email = await _secureStorage.read(key: _keyEmail);
+    if (email == null) return false;
+
+    // Retry up to 3 times with 2s delay for transient failures
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      if (attempt > 1) {
+        debugPrint('MEGA CONNECTION: retry $attempt/3...');
+        await Future.delayed(const Duration(seconds: 2));
+      }
+
+      final result = await _sdk.restoreSession();
+      if (result['success'] == true) {
+        _cachedEmail = email;
+        lastError = null;
+        debugPrint('MEGA SESSION RESTORED for $email');
+        return true;
+      }
+
+      lastError = (result['error'] as String?)?.isNotEmpty == true
+          ? result['error'] as String
+          : 'MEGA NOT READY';
+      debugPrint('MEGA CONNECTION: attempt $attempt/3 failed — $lastError');
+    }
+
+    // All retries exhausted — do NOT clear session, it may work later
+    debugPrint('MEGA CONNECTION LOST — all retries exhausted');
+    return false;
+  }
+
+  @override
+  Future<bool> signIn() async {
+    throw UnsupportedError(
+      'MEGA requires credentials. Use loginWithCredentials instead.',
+    );
+  }
+
+  Future<bool> loginWithCredentials(String email, String password) async {
+    lastError = null;
+    final result = await _sdk.login(email, password);
+    debugPrint('MEGA SDK LOGIN: success=${result['success']}');
+    if (result['success'] == true) {
+      _cachedEmail = email;
+      await _saveSession(null, email);
+      debugPrint('MEGA SESSION SAVED for $email');
+      return true;
+    }
+    lastError = (result['error'] as String?)?.isNotEmpty == true
+        ? result['error'] as String
+        : 'MEGA NOT READY';
+    return false;
+  }
+
+  @override
+  Future<void> signOut() async {
+    await _sdk.logout();
+    _cachedEmail = null;
+    await _clearSession();
+    debugPrint('MEGA LOGOUT completed');
+  }
+
+  Future<void> _saveSession(String? session, String email) async {
+    if (session != null && session.isNotEmpty) {
+      await _secureStorage.write(key: _keySessionId, value: session);
+    }
+    await _secureStorage.write(key: _keyEmail, value: email);
+  }
+
+  Future<void> _clearSession() async {
+    await _secureStorage.delete(key: _keySessionId);
+    await _secureStorage.delete(key: _keyEmail);
+  }
+
+  // ── Folder management ───────────────────────────────────────────────────
+
+  Future<bool> _ensureBackupFolderExists() async {
+    final result = await _sdk.ensureBackupFolder();
+    return result['success'] == true;
+  }
+
+  Future<List<Map<String, dynamic>>> _listBackupNodes() async {
+    await _ensureBackupFolderExists();
+    final result = await _sdk.listBackupFiles();
+    if (result['success'] == true && result['files'] != null) {
+      return List<Map<String, dynamic>>.from(result['files'] as List);
+    }
+    return [];
+  }
+
+  // ── Upload ──────────────────────────────────────────────────────────────
+
+  @override
+  Future<bool> uploadSingleFile(
+    List<int> bytes,
+    String fileName,
+    String checksum,
+  ) async {
+    lastError = null;
+    await _deleteExistingFiles(fileName);
+
+    final uploadName = _cloudFileName(fileName);
+    final mapResult = await _sdk.uploadFile(bytes: bytes, fileName: uploadName);
+    if (mapResult['success'] == true) return true;
+    lastError = (mapResult['error'] as String?)?.isNotEmpty == true
+        ? mapResult['error'] as String
+        : 'UPLOAD FAILED';
+    debugPrint('MEGA SDK UPLOAD ERROR: $lastError');
+    return false;
+  }
+
+  @override
+  Future<bool> uploadChunked(
+    List<int> bytes,
+    String baseName,
+    String checksum,
+    String fileExt,
+  ) async {
+    lastError = null;
+    final cloudBaseName = generateObfuscatedName('');
+    final partCount =
+        (bytes.length / BaseCloudBackupProvider.kChunkSize).ceil();
+
+    final manifest = {
+      'type': 'chunked_manifest',
+      'baseName': baseName,
+      'partCount': partCount,
+      'totalSize': bytes.length,
+      'checksum': checksum,
+      'partSize': BaseCloudBackupProvider.kChunkSize,
+      'extension': fileExt,
+    };
+    final manifestBytes = utf8.encode(jsonEncode(manifest));
+    final cloudManifestName = '${cloudBaseName}_m.dat';
+    final manifestUpload = await _sdk.uploadFile(
+      bytes: manifestBytes,
+      fileName: cloudManifestName,
+    );
+    if (manifestUpload['success'] != true) {
+      lastError = (manifestUpload['error'] as String?)?.isNotEmpty == true
+          ? manifestUpload['error'] as String
+          : 'UPLOAD FAILED';
+      debugPrint('MEGA SDK MANIFEST UPLOAD ERROR: $lastError');
+      return false;
+    }
+
+    for (var i = 0; i < partCount; i++) {
+      final start = i * BaseCloudBackupProvider.kChunkSize;
+      final end =
+          (start + BaseCloudBackupProvider.kChunkSize).clamp(0, bytes.length);
+      final chunk = bytes.sublist(start, end);
+      final cloudPartName =
+          '${cloudBaseName}_p${i.toString().padLeft(4, '0')}.bin';
+
+      final partUpload = await _sdk.uploadFile(
+        bytes: chunk,
+        fileName: cloudPartName,
+      );
+      if (partUpload['success'] != true) {
+        lastError = (partUpload['error'] as String?)?.isNotEmpty == true
+            ? partUpload['error'] as String
+            : 'UPLOAD FAILED';
+        debugPrint('MEGA SDK PART UPLOAD ERROR: $lastError');
+        return false;
+      }
+      onUploadProgress?.call(end, bytes.length);
+    }
+    return true;
+  }
+
+  String _cloudFileName(String original) {
+    final timestamp = DateTime.now().toUtc().millisecondsSinceEpoch;
+    final hash = sha256
+        .convert(utf8.encode(original))
+        .toString()
+        .substring(0, 8);
+    final ext = original.endsWith('.vxbackup') ? '.vxbin' : '.dat';
+    return '${_namePrefix()}${timestamp}_$hash$ext';
+  }
+
+  String _namePrefix() {
+    final random = Random.secure();
+    final bytes = Uint8List.fromList(
+      List.generate(8, (_) => random.nextInt(256)),
+    );
+    return base64Url.encode(bytes).replaceAll('=', '');
+  }
+
+  Future<void> _deleteExistingFiles(String fileName) async {
+    final nodes = await _listBackupNodes();
+    for (final node in nodes) {
+      final name = node['name'] as String? ?? '';
+      if (name == fileName) {
+        await _sdk.deleteNode(node['handle'] as String);
+      }
+    }
+  }
+
+  // ── Download ────────────────────────────────────────────────────────────
+
+  @override
+  Future<List<int>?> downloadFileBytes(
+    String fileId, {
+    int? expectedSize,
+    String? expectedChecksum,
+  }) async {
+    final result = await _sdk.downloadFile(fileId);
+    if (result['success'] == true && result['bytes'] != null) {
+      final bytes = result['bytes'] as List<int>;
+      if (expectedSize != null && bytes.length != expectedSize) return null;
+      if (expectedChecksum != null &&
+          sha256.convert(bytes).toString() != expectedChecksum) {
+        return null;
+      }
+      return bytes;
+    }
+    return null;
+  }
+
+  @override
+  Future<List<int>?> downloadChunked(
+    String baseName,
+    String manifestFileId,
+  ) async {
+    final manifestResult = await _sdk.downloadFile(manifestFileId);
+    if (manifestResult['success'] != true) return null;
+
+    final manifestBytes = manifestResult['bytes'] as List<int>;
+    if (manifestBytes.isEmpty) return null;
+
+    Map<String, dynamic> manifest;
+    try {
+      manifest =
+          jsonDecode(utf8.decode(manifestBytes)) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
+
+    final partCount = manifest['partCount'] as int;
+    final totalSize = manifest['totalSize'] as int;
+    final expectedChecksum = manifest['checksum'] as String;
+    final cloudBaseName = manifest['cloudBaseName'] as String? ?? baseName;
+
+    final nodes = await _listBackupNodes();
+    final partPrefix = '${cloudBaseName}_p';
+    final parts = nodes
+        .where((n) => (n['name'] as String).startsWith(partPrefix))
+        .toList()
+      ..sort((a, b) =>
+          (a['name'] as String).compareTo(b['name'] as String));
+
+    if (parts.length < partCount) return null;
+
+    final allBytes = <int>[];
+    for (final part in parts) {
+      final chunkResult = await _sdk.downloadFile(part['handle'] as String);
+      if (chunkResult['success'] != true || chunkResult['bytes'] == null) {
+        return null;
+      }
+      allBytes.addAll(chunkResult['bytes'] as List<int>);
+    }
+
+    if (allBytes.length != totalSize) return null;
+    if (sha256.convert(allBytes).toString() != expectedChecksum) return null;
+
+    return allBytes;
+  }
+
+  // ── Listing ─────────────────────────────────────────────────────────────
+
+  @override
+  Future<List<BackupVersion>> listBackups() async {
+    if (!await ensureAuthenticated()) return [];
+
+    try {
+      final nodes = await _listBackupNodes();
+      final versions = <BackupVersion>[];
+
+      for (final node in nodes) {
+        final name = node['name'] as String? ?? '';
+        final handle = node['handle'] as String? ?? '';
+        final size = node['size'] as int? ?? 0;
+        final ts = node['modificationTime'] as int? ?? 0;
+
+        final createdAt = ts > 0
+            ? DateTime.fromMillisecondsSinceEpoch(ts * 1000)
+            : DateTime.now();
+
+        versions.add(BackupVersion(
+          driveFileId: handle,
+          fileName: name,
+          createdAt: createdAt,
+          totalSizeBytes: size,
+          hasAuthBundle: true,
+          provider: CloudProvider.mega,
+        ));
+      }
+
+      versions.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      return versions;
+    } catch (e, st) {
+      debugPrint('MEGA SDK LIST: $e\n$st');
+      return [];
+    }
+  }
+
+  @override
+  Future<bool> hasBackup() async {
+    if (!await ensureAuthenticated()) return false;
+    return (await findLatestBackup()) != null;
+  }
+
+  @override
+  Future<BackupVersion?> findLatestBackup() async {
+    if (!await ensureAuthenticated()) return null;
+    final versions = await listBackups();
+    return versions.isNotEmpty ? versions.first : null;
+  }
+
+  @override
+  Future<BackupVersion?> getBackupMetadata() async {
+    final version = await findLatestBackup();
+    if (version == null) return null;
+
+    try {
+      final data = await downloadVersion(version);
+      if (data == null) return version;
+
+      final manifestJson = data['manifest'] as Map<String, dynamic>?;
+      if (manifestJson == null) return version;
+
+      final manifest = BackupManifest.fromJson(manifestJson);
+      final counts = manifest.counts;
+      return BackupVersion(
+        driveFileId: version.driveFileId,
+        fileName: version.fileName,
+        createdAt: version.createdAt,
+        totalSizeBytes: manifest.totalSizeBytes,
+        mainNoteCount: counts['mainNoteCount'] ?? 0,
+        hiddenNoteCount: counts['hiddenNoteCount'] ?? 0,
+        driveFileCount: counts['driveFileCount'] ?? 0,
+        passwordEntryCount: counts['passwordEntryCount'] ?? 0,
+        hasAuthBundle: data.containsKey('authBundle'),
+        provider: CloudProvider.mega,
+      );
+    } catch (e, st) {
+      debugPrint('MEGA SDK METADATA: $e\n$st');
+      return version;
+    }
+  }
+
+  // ── Prune / Delete ──────────────────────────────────────────────────────
+
+  @override
+  Future<int> pruneBackups({int keepCount = 5}) async {
+    final versions = await listBackups();
+    if (versions.length <= keepCount) return 0;
+
+    var deleted = 0;
+    for (var i = keepCount; i < versions.length; i++) {
+      try {
+        await _sdk.deleteNode(versions[i].driveFileId);
+        deleted++;
+      } catch (e) {
+        debugPrint('MEGA SDK PRUNE: ${versions[i].driveFileId}: $e');
+      }
+    }
+    return deleted;
+  }
+
+  @override
+  Future<int> deleteAllBackups() async {
+    if (!await ensureAuthenticated()) return 0;
+
+    var deleted = 0;
+    try {
+      final nodes = await _listBackupNodes();
+      for (final node in nodes) {
+        final handle = node['handle'] as String?;
+        if (handle == null) continue;
+        await _sdk.deleteNode(handle);
+        deleted++;
+      }
+    } catch (e, st) {
+      debugPrint('MEGA SDK DELETE ALL: $e\n$st');
+    }
+    return deleted;
+  }
+
+  // ── Storage / Quota ─────────────────────────────────────────────────────
+
+  @override
+  Future<({int fileCount, int totalBytes})> storageUsage() async {
+    if (!await ensureAuthenticated()) return (fileCount: 0, totalBytes: 0);
+
+    try {
+      final nodes = await _listBackupNodes();
+      var totalBytes = 0;
+      for (final node in nodes) {
+        totalBytes += node['size'] as int? ?? 0;
+      }
+      return (fileCount: nodes.length, totalBytes: totalBytes);
+    } catch (e) {
+      debugPrint('MEGA SDK STORAGE USAGE: $e');
+      return (fileCount: 0, totalBytes: 0);
+    }
+  }
+
+  @override
+  Future<({int usedBytes, int totalBytes})> getAccountQuota() async {
+    if (!await ensureAuthenticated()) return (usedBytes: 0, totalBytes: 0);
+
+    try {
+      final result = await _sdk.getAccountQuota();
+      if (result['success'] == true) {
+        return (
+          usedBytes: result['usedBytes'] as int? ?? 0,
+          totalBytes: result['totalBytes'] as int? ?? 0,
+        );
+      }
+    } catch (e) {
+      debugPrint('MEGA SDK QUOTA: $e');
+    }
+    return (usedBytes: 0, totalBytes: 0);
+  }
+
+  @override
+  Future<void> recordBackupTime() async {
+    await Hive.box('vaultx_settings').put(
+      'lastMegaBackupAt',
+      DateTime.now().toUtc().toIso8601String(),
+    );
+  }
+}

@@ -113,7 +113,14 @@ class SecureNote {
     this.attachments = const [],
     this.versions = const [],
     this.ocrText = '',
+    this.transcript = '',
+    this.summary = '',
+    this.links = const [],
     this.backupExcluded = false,
+    this.deleted = false,
+    this.deletedAt,
+    this.viewCount = 0,
+    this.lastViewedAt,
   });
 
   final String id;
@@ -136,17 +143,56 @@ class SecureNote {
   final List<SecureAttachment> attachments;
   final List<Map<String, dynamic>> versions;
   final String ocrText;
+  final String transcript;
+  final String summary;
+  final List<String> links;
   final bool backupExcluded;
+  final bool deleted;
+  final DateTime? deletedAt;
+  final int viewCount;
+  final DateTime? lastViewedAt;
 
   bool get isLocalOnly => backupExcluded;
 
   /// Returns true if this note should be included in a backup.
   /// If [folderExcluded] is provided, it can be used to implement inheritance.
   bool shouldIncludeInBackup({bool folderExcluded = false}) {
+    if (deleted) return false;
     if (backupExcluded) return false;
     if (folderExcluded) return false;
     return true;
   }
+
+  SecureNote markDeleted() => SecureNote(
+    id: id,
+    title: title,
+    body: body,
+    type: type,
+    createdAt: createdAt,
+    updatedAt: updatedAt,
+    folder: folder,
+    tags: tags,
+    priority: priority,
+    pinned: false,
+    favorite: false,
+    archived: false,
+    archivedAt: null,
+    locked: locked,
+    oneTimeView: oneTimeView,
+    expiresAt: expiresAt,
+    checklist: checklist,
+    attachments: attachments,
+    versions: versions,
+    ocrText: ocrText,
+    transcript: transcript,
+    summary: summary,
+    links: links,
+    backupExcluded: backupExcluded,
+    deleted: true,
+    deletedAt: DateTime.now(),
+    viewCount: viewCount,
+    lastViewedAt: lastViewedAt,
+  );
 
   SecureNote copyWith({
     String? title,
@@ -166,7 +212,14 @@ class SecureNote {
     List<SecureAttachment>? attachments,
     List<Map<String, dynamic>>? versions,
     String? ocrText,
+    String? transcript,
+    String? summary,
+    List<String>? links,
     bool? backupExcluded,
+    bool? deleted,
+    DateTime? deletedAt,
+    int? viewCount,
+    DateTime? lastViewedAt,
   }) {
     return SecureNote(
       id: id,
@@ -193,7 +246,14 @@ class SecureNote {
       attachments: attachments ?? this.attachments,
       versions: versions ?? this.versions,
       ocrText: ocrText ?? this.ocrText,
+      transcript: transcript ?? this.transcript,
+      summary: summary ?? this.summary,
+      links: links ?? this.links,
       backupExcluded: backupExcluded ?? this.backupExcluded,
+      deleted: deleted ?? this.deleted,
+      deletedAt: deletedAt ?? this.deletedAt,
+      viewCount: viewCount ?? this.viewCount,
+      lastViewedAt: lastViewedAt ?? this.lastViewedAt,
     );
   }
 
@@ -218,14 +278,29 @@ class SecureNote {
     'attachments': attachments.map((e) => e.toJson()).toList(),
     'versions': versions,
     'ocrText': ocrText,
+    'transcript': transcript,
+    'summary': summary,
+    'links': links,
     'backupExcluded': backupExcluded,
+    'deleted': deleted,
+    'deletedAt': deletedAt?.toIso8601String(),
+    'viewCount': viewCount,
+    'lastViewedAt': lastViewedAt?.toIso8601String(),
   };
+
+  static NoteType _parseNoteType(String? raw) {
+    try {
+      return NoteType.values.byName(raw ?? 'text');
+    } catch (_) {
+      return NoteType.text;
+    }
+  }
 
   factory SecureNote.fromJson(Map<String, dynamic> json) => SecureNote(
     id: json['id'] as String? ?? '',
     title: json['title'] as String? ?? '',
     body: json['body'] as String? ?? '',
-    type: NoteType.values.byName(json['type'] as String? ?? 'text'),
+    type: _parseNoteType(json['type'] as String?),
     createdAt: DateTime.tryParse(json['createdAt'] as String? ?? '') ?? DateTime.now(),
     updatedAt: DateTime.tryParse(json['updatedAt'] as String? ?? '') ?? DateTime.now(),
     folder: json['folder'] as String? ?? 'Private',
@@ -269,6 +344,19 @@ class SecureNote {
         .map((e) => e is Map ? Map<String, dynamic>.from(e) : <String, dynamic>{})
         .toList(),
     ocrText: json['ocrText'] as String? ?? '',
+    transcript: json['transcript'] as String? ?? '',
+    summary: json['summary'] as String? ?? '',
+    links: json['links'] != null
+        ? List<String>.from(json['links'] as List)
+        : const [],
     backupExcluded: json['backupExcluded'] as bool? ?? false,
+    deleted: json['deleted'] as bool? ?? false,
+    deletedAt: json['deletedAt'] != null
+        ? DateTime.tryParse(json['deletedAt'] as String? ?? '')
+        : null,
+    viewCount: json['viewCount'] as int? ?? 0,
+    lastViewedAt: json['lastViewedAt'] != null
+        ? DateTime.tryParse(json['lastViewedAt'] as String? ?? '')
+        : null,
   );
 }

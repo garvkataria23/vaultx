@@ -7,14 +7,14 @@ import '../models/auth.dart';
 import '../models/backup.dart';
 import 'auth_service.dart';
 import 'backup_change_tracker.dart';
+import 'backup_manager.dart';
 import 'backup_service.dart';
-import 'google_drive_backup.dart';
 import 'floating_notification_service.dart';
 
 /// Interval options for automatic backups.
 enum BackupInterval { daily, weekly, manual }
 
-/// Periodic backup scheduler with retry logic and health tracking.
+/// Multi-provider periodic backup scheduler with retry logic and health tracking.
 ///
 /// Runs a periodic timer (every 15 minutes in check mode) and evaluates whether
 /// a backup should be triggered based on:
@@ -22,8 +22,8 @@ enum BackupInterval { daily, weekly, manual }
 /// 2. Whether any tracked data has changed since the last successful backup
 /// 3. Retry backoff for consecutive failures
 ///
-/// Tracks backup health via [BackupState] persisted in Hive. Avoids concurrent
-/// backups and provides progress reporting.
+/// Backs up to ALL enabled and connected providers.
+/// Tracks backup health via [BackupState] persisted in Hive.
 class BackupScheduler {
   BackupScheduler({
     required this.masterKey,
@@ -93,7 +93,7 @@ class BackupScheduler {
     }
   }
 
-  /// Check whether auto-backup is enabled.
+  /// Check whether auto-backup is enabled for any provider.
   static bool isAutoBackupEnabled() {
     final interval = getInterval();
     if (interval == BackupInterval.manual) return false;
@@ -107,15 +107,7 @@ class BackupScheduler {
     await Hive.box('vaultx_settings').put('autoBackup', enabled);
   }
 
-  /// Returns the timestamp of the last successful backup, or null.
-  static DateTime? get lastBackupAt {
-    final raw = Hive.box('vaultx_settings')
-        .get('lastGoogleBackupAt') as String?;
-    if (raw == null) return null;
-    return DateTime.tryParse(raw);
-  }
-
-  /// Returns backoff duration based on consecutive failure count.
+  /// Returns the backoff duration based on consecutive failure count.
   static Duration _backoffDuration(int failures) {
     return switch (failures) {
       0 => Duration.zero,
@@ -136,7 +128,6 @@ class BackupScheduler {
 
     // Check if a backup is already in progress
     if (state.isInProgress) {
-      // Check if the in-progress flag is stale (> 2 hours old)
       if (state.lastBackupAt != null) {
         final staleSince = DateTime.now().toUtc().difference(state.lastBackupAt!);
         if (staleSince > const Duration(hours: 2)) {
@@ -161,12 +152,11 @@ class BackupScheduler {
 
     final interval = getInterval();
     final duration = intervalDuration(interval);
-    final lastBackup = lastBackupAt;
+    final lastBackupAtAny = _lastBackupAtAny();
 
-    if (lastBackup != null) {
-      final elapsed = DateTime.now().toUtc().difference(lastBackup);
+    if (lastBackupAtAny != null) {
+      final elapsed = DateTime.now().toUtc().difference(lastBackupAtAny);
 
-      // If we have consecutive failures, use a shorter interval for retries
       if (state.consecutiveFailures == 0 && elapsed < duration) {
         debugPrint(
           'BACKUP SCHEDULER: skipping — last backup $elapsed ago, '
@@ -177,7 +167,7 @@ class BackupScheduler {
     }
 
     // Check if any data has changed since last backup
-    if (lastBackup != null && !BackupChangeTracker.instance.hasChangesSince(lastBackup)) {
+    if (lastBackupAtAny != null && !BackupChangeTracker.instance.hasChangesSince(lastBackupAtAny)) {
       debugPrint('BACKUP SCHEDULER: skipping — no changes since last backup');
       return;
     }
@@ -189,55 +179,59 @@ class BackupScheduler {
     await BackupState.save(state);
 
     try {
-      final driveService = GoogleDriveBackupService(
-        authService: authService,
-        masterKey: masterKey,
-      );
-      final email = await driveService.restoreSession();
-      if (email == null) {
-        debugPrint('BACKUP SCHEDULER: not authenticated to Drive, skipping');
-        state = state.copyWith(
-          clearInProgress: true,
-          lastError: 'Not authenticated',
-        );
-        await BackupState.save(state);
-        return;
-      }
-
-      final backupService = BackupService(
+      final manager = BackupManager(
         masterKey: masterKey,
         kind: kind,
         authService: authService,
       );
+      await manager.init();
 
-      var uploadOk = false;
-      var backupSize = 0;
+      final results = await manager.backupToAll(
+        compressMedia: Hive.box('vaultx_settings')
+            .get('optimizeMedia', defaultValue: false) as bool,
+        useArchive: Hive.box('vaultx_settings')
+            .get('useArchiveBackup', defaultValue: false) as bool,
+        onlyIfAutoEnabled: true,
+      );
 
-      await driveService.uploadBackup(({bool compressMedia = false}) async {
-        final result = await backupService.createBackup(compressMedia: compressMedia);
-        backupSize = result.manifest.totalSizeBytes;
-        return result.data;
-      });
-
-      uploadOk = true;
-
-      if (uploadOk) {
+      if (results.values.any((ok) => ok)) {
         BackupChangeTracker.instance.clearAll();
         state = state.copyWith(
           lastBackupAt: DateTime.now().toUtc(),
-          lastBackupSizeBytes: backupSize,
           consecutiveFailures: 0,
           clearInProgress: true,
           clearError: true,
           nextRetryAt: null,
-          totalBackupsCreated: state.totalBackupsCreated + 1,
+          totalBackupsCreated: state.totalBackupsCreated + results.values.where((ok) => ok).length,
         );
         await BackupState.save(state);
-        FloatingNotificationService.instance.show(
-          'Auto-backup completed successfully',
-          type: AppNotificationType.success,
+
+        final succeeded = results.values.where((ok) => ok).length;
+        final failed = results.values.where((ok) => !ok).length;
+        if (failed == 0) {
+          FloatingNotificationService.instance.show(
+            'Auto-backup completed successfully',
+            type: AppNotificationType.success,
+          );
+          debugPrint('BACKUP SCHEDULER: auto-backup completed to all providers');
+        } else {
+          FloatingNotificationService.instance.show(
+            'Auto-backup: $succeeded provider(s) succeeded, $failed failed',
+            type: AppNotificationType.warning,
+          );
+          debugPrint('BACKUP SCHEDULER: partial auto-backup success');
+        }
+      } else {
+        // All providers failed
+        final newFailures = state.consecutiveFailures + 1;
+        state = state.copyWith(
+          clearInProgress: true,
+          consecutiveFailures: newFailures,
+          lastError: 'All providers failed',
+          nextRetryAt: DateTime.now().toUtc().add(_backoffDuration(newFailures)),
         );
-        debugPrint('BACKUP SCHEDULER: auto-backup completed successfully (${backupSize}B)');
+        await BackupState.save(state);
+        debugPrint('BACKUP SCHEDULER: auto-backup failed on all providers');
       }
     } catch (e, st) {
       debugPrint('BACKUP SCHEDULER: auto-backup error: $e\n$st');
@@ -250,5 +244,20 @@ class BackupScheduler {
       );
       await BackupState.save(state);
     }
+  }
+
+  /// Returns the most recent backup timestamp across all providers.
+  static DateTime? _lastBackupAtAny() {
+    DateTime? latest;
+    for (final key in ['lastGoogleBackupAt', 'lastMegaBackupAt']) {
+      final raw = Hive.box('vaultx_settings').get(key) as String?;
+      if (raw != null) {
+        final dt = DateTime.tryParse(raw);
+        if (dt != null && (latest == null || dt.isAfter(latest))) {
+          latest = dt;
+        }
+      }
+    }
+    return latest;
   }
 }

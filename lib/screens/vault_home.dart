@@ -16,7 +16,7 @@ import 'note_editor.dart';
 import 'settings_screen.dart';
 import 'decoy_calculator_screen.dart';
 import 'game_screen.dart';
-import 'graph_view_screen.dart';
+import 'smart_view_screen.dart';
 
 const _kPageSize = 50;
 
@@ -34,6 +34,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
   VaultRepository? _repo;
   EncryptedBlobService? _blobs;
   DriveService? _drive;
+  TrashService? _trash;
   PasswordVaultService? _passwordVault;
   ItemActionService? _itemActions;
   List<SecureNote> _notes = [];
@@ -97,6 +98,12 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
         drive: _drive!,
         masterKey: widget.authResult.masterKey!,
       );
+      _trash = TrashService(
+        repo: _repo!,
+        drive: _drive!,
+        vaultKind: widget.authResult.kind,
+      );
+      _trash!.autoCleanup();
     }
     DeadMansService.resetTimer();
     _load();
@@ -135,9 +142,12 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive) {
+    if (state == AppLifecycleState.paused) {
       _backgroundedAt = DateTime.now();
+      // If a sensitive operation (like export/import) is active, lock immediately
+      if (SecurityPlatform.isSensitiveOperationActive) {
+        _lockNow();
+      }
     } else if (state == AppLifecycleState.resumed) {
       final now = DateTime.now();
       final lockMinutes =
@@ -337,114 +347,18 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
           }
         }
         break;
+      case 'restore':
+        for (final n in selectedNotes) {
+          if (widget.authResult.kind != VaultKind.decoy) {
+            await _repo!.save(n.copyWith(archived: false, deleted: false));
+          }
+        }
+        FloatingNotificationService.instance.show('${selectedNotes.length} notes restored');
+        break;
     }
 
     _deselectAll();
     await _load();
-  }
-
-  Future<bool> _unlockFolder(String folderName) async {
-    final meta = _folderMetadata[folderName];
-    if (meta == null || !meta.isLocked) return true;
-    if (_sessionUnlockedFolders.contains(folderName)) return true;
-
-    bool authenticated = false;
-    if (await widget.auth.isBiometricUnlockAvailable()) {
-      authenticated = await widget.auth.authenticateBiometric();
-    }
-
-    if (!authenticated && mounted) {
-      final password = await _showPasswordDialog(
-        title: 'Unlock Folder',
-        label: 'Enter master password',
-      );
-      if (password != null) {
-        final result = await widget.auth.unlockWithPassword(password);
-        final verified = await widget.auth.verify(result);
-        authenticated = verified.ok;
-      }
-    }
-
-    if (authenticated) {
-      if (mounted) {
-        setState(() {
-          _sessionUnlockedFolders.add(folderName);
-          _runSearch();
-        });
-      }
-      return true;
-    }
-    return false;
-  }
-
-  Future<void> _toggleFolderLock(String folderName) async {
-    if (widget.authResult.kind == VaultKind.decoy) return;
-    final meta = _folderMetadata[folderName] ?? SecureDriveFolder(name: folderName);
-    final isLocked = meta.isLocked;
-    
-    if (isLocked) {
-      if (!await _unlockFolder(folderName)) return;
-    }
-
-    final updated = meta.copyWith(isLocked: !isLocked);
-    await _repo!.saveFolderMetadata(updated);
-    if (mounted) {
-      setState(() {
-        _folderMetadata[folderName] = updated;
-        if (!updated.isLocked) {
-          _sessionUnlockedFolders.remove(folderName);
-        }
-        _runSearch();
-      });
-      FloatingNotificationService.instance.show(
-        updated.isLocked
-            ? 'Folder "$folderName" is now locked'
-            : 'Folder "$folderName" is now unlocked',
-      );
-    }
-  }
-
-  void _manageFolders() {
-    final folders = {for (final n in _notes) n.folder}.toList();
-    folders.sort();
-
-    showModalBottomSheet(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setLocalState) => Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Manage Folders',
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
-              const SizedBox(height: 16),
-              ...folders.map((f) {
-                final meta = _folderMetadata[f];
-                final isLocked = meta?.isLocked ?? false;
-                return ListTile(
-                  leading: Icon(isLocked ? Icons.lock : Icons.folder_open),
-                  title: Text(f),
-                  trailing: Switch(
-                    value: isLocked,
-                    onChanged: (v) async {
-                      Navigator.pop(ctx);
-                      await _toggleFolderLock(f);
-                    },
-                  ),
-                );
-              }),
-              const SizedBox(height: 16),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 
   void _startLockHold() {
@@ -684,19 +598,45 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
   }
 
   Future<void> _openEditor([SecureNote? note]) async {
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => NoteEditor(
-          note: note,
-          blobs: _blobs,
-          onAutoSave: (edited) => _saveNote(edited, note),
+    final navigator = Navigator.of(context);
+    if (note != null) {
+      final updated = note.copyWith(
+        viewCount: note.viewCount + 1,
+        lastViewedAt: DateTime.now(),
+      );
+      if (widget.authResult.kind != VaultKind.decoy) {
+        await _repo?.save(updated);
+      } else {
+        await DecoySeedService.saveNote(updated);
+      }
+      
+      await navigator.push(
+        MaterialPageRoute(
+          builder: (_) => NoteEditor(
+            note: updated,
+            blobs: _blobs,
+            onAutoSave: (edited) => _saveNote(edited, updated),
+          ),
         ),
-      ),
-    );
+      );
+    } else {
+      await navigator.push(
+        MaterialPageRoute(
+          builder: (_) => NoteEditor(
+            note: null,
+            blobs: _blobs,
+            onAutoSave: (edited) => _saveNote(edited, null),
+          ),
+        ),
+      );
+    }
     if (mounted) await _load();
   }
 
   Future<bool> _authenticateForAction(String title) async {
+    // Enable screen protection during sensitive operations
+    await SecurityPlatform.enableScreenProtection();
+
     final bioEnabled = await widget.auth.isBiometricUnlockAvailable();
     if (bioEnabled) {
       final ok = await widget.auth.authenticateBiometric();
@@ -709,18 +649,33 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
     final ctrl = TextEditingController();
     final secret = await showDialog<String>(
       context: context,
+      barrierDismissible: false,
       builder: (dialogCtx) => AlertDialog(
         title: Text(title),
-        content: TextField(
-          controller: ctrl,
-          obscureText: true,
-          autofocus: true,
-          decoration: InputDecoration(
-            labelText: widget.authResult.kind == VaultKind.hidden
-                ? 'Hidden vault password'
-                : 'Master password',
-          ),
-          onSubmitted: (val) => Navigator.of(dialogCtx).pop(val),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Enter your ${widget.authResult.kind == VaultKind.hidden ? 'hidden vault' : widget.authResult.kind == VaultKind.decoy ? 'decoy' : 'master'} password to continue.',
+              style: const TextStyle(fontSize: 13),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: ctrl,
+              obscureText: true,
+              autofocus: true,
+              decoration: InputDecoration(
+                labelText: widget.authResult.kind == VaultKind.hidden
+                    ? 'Hidden vault password'
+                    : widget.authResult.kind == VaultKind.decoy
+                        ? 'Decoy password'
+                        : 'Master password',
+                border: const OutlineInputBorder(),
+              ),
+              onSubmitted: (val) => Navigator.of(dialogCtx).pop(val),
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -738,16 +693,23 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
 
     if (secret == null || secret.isEmpty) return false;
 
+    bool success = false;
     if (widget.authResult.kind == VaultKind.decoy) {
-      // In decoy mode, we check against decoy password
-      return await widget.auth.verifyDecoyPassword(secret);
+      success = await widget.auth.verifyDecoyPassword(secret);
+    } else {
+      var result = widget.authResult.kind == VaultKind.hidden
+          ? await widget.auth.unlockHidden(secret)
+          : await widget.auth.unlockWithPassword(secret);
+      
+      result = await widget.auth.verify(result);
+      success = result.ok && result.kind == widget.authResult.kind;
     }
 
-    final result = widget.authResult.kind == VaultKind.hidden
-        ? await widget.auth.unlockHidden(secret)
-        : await widget.auth.unlockWithPassword(secret);
+    if (!success && mounted) {
+      FloatingNotificationService.instance.show('Authentication failed: Invalid password', error: true);
+    }
 
-    return result.ok && result.kind == widget.authResult.kind;
+    return success;
   }
 
   void _onPageChanged(int index) {
@@ -865,8 +827,13 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
             ),
             body: Column(
               children: [
-                if (isSelectionMode && _selectedIds.length < _filteredNotes.length)
-                  _buildGmailSelectionBanner(),
+                SelectionBanner(
+                  selectedCount: _selectedIds.length,
+                  totalCount: _filteredNotes.length,
+                  onSelectAll: _selectAll,
+                  onClear: _deselectAll,
+                  itemName: 'notes',
+                ),
                 Expanded(
                   child: RepaintBoundary(
                     child: PageView(
@@ -889,6 +856,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
                           onDataChanged: _load,
                           vaultKind: widget.authResult.kind,
                           onSwitchVault: _switchVault,
+                          trashService: _trash,
                         ),
                         const VaultXGameScreen(),
                       ],
@@ -950,7 +918,6 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
 
   Widget _buildNotesTab(List<String> folders) {
     final filtered = _filteredNotes;
-    final cs = Theme.of(context).colorScheme;
     return Column(
       children: [
         Padding(
@@ -976,12 +943,17 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
                 onPressed: () {
                   Navigator.of(context).push(
                     MaterialPageRoute(
-                      builder: (_) => GraphViewScreen(notes: _notes, blobs: _blobs),
+                      builder: (_) => SmartViewScreen(
+                        notes: _notes,
+                        repo: _repo,
+                        blobs: _blobs,
+                        vaultKind: widget.authResult.kind,
+                      ),
                     ),
                   );
                 },
-                icon: const Icon(Icons.hub_outlined),
-                tooltip: 'Knowledge Graph',
+                icon: const Icon(Icons.auto_awesome),
+                tooltip: 'Smart View',
               ),
               const SizedBox(width: 8),
               IconButton.filledTonal(
@@ -1072,15 +1044,15 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
           child: Row(
             children: [
               Expanded(
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(12),
+                child: _buildDashboardTile(
+                  context,
+                  icon: Icons.archive_outlined,
+                  label: 'Archived',
+                  count: _archivedCount,
                   onTap: () async {
                     if (widget.authResult.kind == VaultKind.decoy ||
                         _passwordVault == null) {
-                      FloatingNotificationService.instance.show(
-                        'Archive unavailable in decoy mode',
-                        type: AppNotificationType.info,
-                      );
+                      _showDecoyInfo('Archive');
                       return;
                     }
                     await Navigator.of(context).push(
@@ -1088,62 +1060,13 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
                         builder: (_) => ArchiveScreen(
                           repo: _repo!,
                           passwordVault: _passwordVault!,
+                          auth: widget.auth,
                         ),
                       ),
                     );
                     if (mounted) _load();
                   },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: cs.surfaceContainerHighest.withValues(alpha: 0.3),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: cs.primary.withValues(alpha: 0.2)),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(Icons.archive_outlined, color: cs.primary, size: 20),
-                        const SizedBox(width: 10),
-                        Text(
-                          'Archived items',
-                          style: TextStyle(
-                            fontWeight: FontWeight.w600,
-                            color: cs.onSurface,
-                          ),
-                        ),
-                        const Spacer(),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: _archivedCount > 0
-                                ? cs.primary.withValues(alpha: 0.15)
-                                : cs.onSurface.withValues(alpha: 0.08),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Text(
-                            '$_archivedCount',
-                            style: TextStyle(
-                              fontWeight: FontWeight.w700,
-                              fontSize: 12,
-                              color: _archivedCount > 0
-                                  ? cs.primary
-                                  : cs.onSurface.withValues(alpha: 0.4),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              IconButton.filledTonal(
-                onPressed: _manageFolders,
-                icon: const Icon(Icons.folder_shared_outlined),
-                tooltip: 'Manage folders',
               ),
             ],
           ),
@@ -1244,36 +1167,62 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildGmailSelectionBanner() {
+  Widget _buildDashboardTile(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    int? count,
+    required VoidCallback onTap,
+  }) {
     final cs = Theme.of(context).colorScheme;
-    return Container(
-      width: double.infinity,
-      color: cs.secondaryContainer.withValues(alpha: 0.5),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Text(
-            'All ${_selectedIds.length} notes on this page are selected. ',
-            style: const TextStyle(fontSize: 13),
-          ),
-          TextButton(
-            onPressed: _selectAll,
-            style: TextButton.styleFrom(
-              visualDensity: VisualDensity.compact,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: cs.surfaceContainerHighest.withValues(alpha: 0.3),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: cs.primary.withValues(alpha: 0.2)),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: cs.primary, size: 20),
+            const SizedBox(width: 10),
+            Text(
+              label,
+              style: const TextStyle(fontWeight: FontWeight.w600),
             ),
-            child: Text(
-              'Select all ${_filteredNotes.length} notes',
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                color: cs.primary,
-                fontSize: 13,
+            if (count != null) ...[
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: count > 0
+                      ? cs.primary.withValues(alpha: 0.15)
+                      : cs.onSurface.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  '$count',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12,
+                    color: count > 0 ? cs.primary : cs.onSurface.withValues(alpha: 0.4),
+                  ),
+                ),
               ),
-            ),
-          ),
-        ],
+            ],
+          ],
+        ),
       ),
+    );
+  }
+
+  void _showDecoyInfo(String feature) {
+    FloatingNotificationService.instance.show(
+      '$feature unavailable in decoy mode',
+      type: AppNotificationType.info,
     );
   }
 }

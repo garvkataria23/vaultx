@@ -305,6 +305,14 @@ class SmartIndexerService {
         scoreField(note.ocrText, 'ocr text');
       }
 
+      if (note.transcript.isNotEmpty) {
+        scoreField(note.transcript, 'transcript');
+      }
+
+      if (note.summary.isNotEmpty) {
+        scoreField(note.summary, 'summary');
+      }
+
       if (bestScore < 0.8) {
         scoreFuzzy(note.title, 'title (fuzzy)', 0.9);
         if (bestScore < 0.6) {

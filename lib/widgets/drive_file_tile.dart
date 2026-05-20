@@ -18,6 +18,8 @@ class DriveFileTile extends StatelessWidget {
     this.onCompress,
     this.onConvert,
     this.onToggleBackup,
+    this.isSelected = false,
+    this.onSelectionToggle,
   });
 
   final SecureDriveFile file;
@@ -31,6 +33,8 @@ class DriveFileTile extends StatelessWidget {
   final VoidCallback? onCompress;
   final VoidCallback? onConvert;
   final VoidCallback? onToggleBackup;
+  final bool isSelected;
+  final VoidCallback? onSelectionToggle;
 
   IconData _kindIcon() {
     switch (file.kind) {
@@ -94,32 +98,44 @@ class DriveFileTile extends StatelessWidget {
       },
       child: Card(
         clipBehavior: Clip.antiAlias,
+        color: isSelected ? cs.primaryContainer.withValues(alpha: 0.7) : null,
         child: InkWell(
-          onTap: onTap,
-          onLongPress: () => _showActions(context),
+          onTap: isSelected ? onSelectionToggle : onTap,
+          onLongPress: () {
+            HapticFeedback.heavyImpact();
+            if (onSelectionToggle != null) {
+              onSelectionToggle!();
+            } else {
+              _showActions(context);
+            }
+          },
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(
               children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: kindColor.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      Icon(_kindIcon(), color: kindColor, size: 22),
-                      if (file.pinned)
-                        Positioned(
-                          right: -2,
-                          top: -2,
-                          child: Icon(Icons.push_pin, size: 12, color: cs.primary),
-                        ),
-                    ],
-                  ),
+                Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        color: isSelected ? cs.primary : kindColor.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(
+                        isSelected ? Icons.check : _kindIcon(), 
+                        color: isSelected ? cs.onPrimary : kindColor, 
+                        size: 22,
+                      ),
+                    ),
+                    if (file.pinned && !isSelected)
+                      Positioned(
+                        right: -2,
+                        top: -2,
+                        child: Icon(Icons.push_pin, size: 12, color: cs.primary),
+                      ),
+                  ],
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -132,6 +148,7 @@ class DriveFileTile extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           fontWeight: FontWeight.w500,
+                          color: isSelected ? cs.onPrimaryContainer : null,
                         ),
                       ),
                       const SizedBox(height: 2),
@@ -143,7 +160,9 @@ class DriveFileTile extends StatelessWidget {
                               child: Icon(
                                 Icons.cloud_off,
                                 size: 12,
-                                color: cs.onSurface.withValues(alpha: 0.5),
+                                color: isSelected 
+                                    ? cs.onPrimaryContainer.withValues(alpha: 0.6)
+                                    : cs.onSurface.withValues(alpha: 0.5),
                               ),
                             ),
                           Flexible(
@@ -152,7 +171,9 @@ class DriveFileTile extends StatelessWidget {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                color: cs.onSurface.withValues(alpha: 0.5),
+                                color: isSelected 
+                                    ? cs.onPrimaryContainer.withValues(alpha: 0.6)
+                                    : cs.onSurface.withValues(alpha: 0.5),
                               ),
                             ),
                           ),
@@ -166,8 +187,9 @@ class DriveFileTile extends StatelessWidget {
                     padding: const EdgeInsets.only(left: 4),
                     child: Icon(Icons.star, size: 16, color: Colors.amber),
                   ),
-                PopupMenuButton<String>(
-                  onSelected: (v) {
+                if (!isSelected)
+                  PopupMenuButton<String>(
+                    onSelected: (v) {
                     switch (v) {
                       case 'favorite':
                         onFavorite?.call();

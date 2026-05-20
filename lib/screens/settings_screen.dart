@@ -16,8 +16,7 @@ import 'privacy_policy_screen.dart';
 import 'restore_screen.dart';
 import 'security_logs_screen.dart';
 import 'setup_screen.dart';
-
-// Import your floating notification service
+import 'trash_screen.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Dead Man Switch guard
@@ -87,6 +86,7 @@ class SettingsScreen extends StatefulWidget {
     required this.onDataChanged,
     this.vaultKind,
     this.onSwitchVault,
+    this.trashService,
   });
   final VaultAuthService auth;
   final VaultRepository? repo;
@@ -94,6 +94,7 @@ class SettingsScreen extends StatefulWidget {
   final Future<void> Function() onDataChanged;
   final VaultKind? vaultKind;
   final void Function(VaultKind)? onSwitchVault;
+  final TrashService? trashService;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -412,11 +413,16 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
     _notify('Signed out from Google Drive');
   }
 
-  void _openBackupScreen() {
+  Future<void> _openBackupScreen() async {
     if (widget.repo == null) {
       _notify('Backup unavailable in decoy mode', error: true);
       return;
     }
+
+    final authenticated = await _authenticateForAction('Authenticate Cloud Backup');
+    if (!authenticated) return;
+
+    if (!mounted) return;
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => BackupScreen(
@@ -428,11 +434,16 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
     );
   }
 
-  void _openRestoreScreen() {
+  Future<void> _openRestoreScreen() async {
     if (widget.repo == null) {
       _notify('Restore unavailable in decoy mode', error: true);
       return;
     }
+
+    final authenticated = await _authenticateForAction('Authenticate Cloud Restore');
+    if (!authenticated) return;
+
+    if (!mounted) return;
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => RestoreScreen(
@@ -448,51 +459,7 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
     );
   }
 
-  // ── Local backup actions ──────────────────────────────────────────────────
-  Future<void> _exportLocalBackup() async {
-    final path = await widget.repo?.exportEncryptedBackup();
-    await Hive.box(
-      'vaultx_settings',
-    ).put('lastBackupAt', DateTime.now().toIso8601String());
-    _notify(
-      path == null
-          ? 'Backup unavailable in decoy mode'
-          : 'Encrypted backup exported to $path',
-    );
-  }
-
-  Future<void> _restoreLocalBackup() async {
-    if (widget.repo == null) {
-      _notify('Restore unavailable in this mode', error: true);
-      return;
-    }
-    final credentialOk = await _confirmRestoreCredential();
-    if (!credentialOk) {
-      _notify('Restore cancelled or credential rejected', error: true);
-      return;
-    }
-    final picked = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['vxbak', 'json'],
-      withData: false,
-    );
-    final path = picked?.files.single.path;
-    if (path == null) {
-      _notify('Restore cancelled');
-      return;
-    }
-    try {
-      final count = await widget.repo!.restoreEncryptedBackup(path);
-      await widget.onDataChanged();
-      _notify('Restored $count encrypted records');
-    } catch (e) {
-      _notify(
-        'Restore failed: backup password/key did not match this vault',
-        error: true,
-      );
-    }
-  }
-
+  // ── Bulk Import ───────────────────────────────────────────────────
   Future<void> _importBulkNotesZip() async {
     if (_importingZip) return;
 
@@ -500,6 +467,7 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
     final authenticated = await _authenticateForAction('Authenticate Bulk Import');
     if (!authenticated) return;
 
+    SecurityPlatform.setSensitiveOperationActive(true);
     if (!mounted) return;
 
     // Pick file first (outside of progress dialog)
@@ -507,7 +475,10 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
       type: FileType.custom,
       allowedExtensions: ['zip'],
     );
-    if (picked == null || picked.files.isEmpty) return;
+    if (picked == null || picked.files.isEmpty) {
+      SecurityPlatform.setSensitiveOperationActive(false);
+      return;
+    }
 
     if (!mounted) return;
 
@@ -571,6 +542,7 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
         _notify('Import failed: $e', error: true);
       }
     } finally {
+      SecurityPlatform.setSensitiveOperationActive(false);
       progressValue.dispose();
       if (mounted) {
         setState(() => _importingZip = false);
@@ -578,7 +550,73 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
     }
   }
 
+  Future<void> _exportVaultZip() async {
+    if (widget.repo == null) {
+      _notify('Export unavailable in decoy mode', error: true);
+      return;
+    }
+
+    // 1. Show Security Warning for Decrypted Export
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.orange),
+            SizedBox(width: 10),
+            Text('Security Warning'),
+          ],
+        ),
+        content: const Text(
+          'This export will contain FULLY DECRYPTED and READABLE data (including images and videos) to allow for easy phone transfer.\n\n'
+          'Anyone with access to this ZIP file will be able to see your private notes and files.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('I Understand, Export'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    final authenticated =
+        await _authenticateForAction('Authenticate Bulk Export');
+    if (!authenticated) return;
+
+    SecurityPlatform.setSensitiveOperationActive(true);
+    _notify('Preparing decrypted export ZIP...');
+
+    try {
+      final result = await NoteExportService.instance.exportVaultZip(
+        masterKey: widget.repo!.masterKey,
+        kind: widget.repo!.kind,
+        authService: widget.auth,
+      );
+
+      if (result.success) {
+        await NoteExportService.instance.shareExport(result.path);
+        _notify('Vault exported: ${result.noteCount} notes');
+      } else {
+        _notify('Export failed: ${result.error}', error: true);
+      }
+    } catch (e) {
+      _notify('Export error: $e', error: true);
+    } finally {
+      SecurityPlatform.setSensitiveOperationActive(false);
+    }
+  }
+
   Future<bool> _authenticateForAction(String title) async {
+    // Enable screen protection (secure window) during sensitive operations
+    await SecurityPlatform.enableScreenProtection();
+
     final bioEnabled = await widget.auth.isBiometricUnlockAvailable();
     if (bioEnabled) {
       final ok = await widget.auth.authenticateBiometric();
@@ -591,18 +629,31 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
     final ctrl = TextEditingController();
     final secret = await showDialog<String>(
       context: context,
+      barrierDismissible: false,
       builder: (dialogCtx) => AlertDialog(
         title: Text(title),
-        content: TextField(
-          controller: ctrl,
-          obscureText: true,
-          autofocus: true,
-          decoration: InputDecoration(
-            labelText: widget.repo!.kind == VaultKind.hidden
-                ? 'Hidden vault password'
-                : 'Master password',
-          ),
-          onSubmitted: (val) => Navigator.of(dialogCtx).pop(val),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Enter your ${widget.repo!.kind == VaultKind.hidden ? 'hidden vault' : 'master'} password to continue.',
+              style: const TextStyle(fontSize: 13),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: ctrl,
+              obscureText: true,
+              autofocus: true,
+              decoration: InputDecoration(
+                labelText: widget.repo!.kind == VaultKind.hidden
+                    ? 'Hidden vault password'
+                    : 'Master password',
+                border: const OutlineInputBorder(),
+              ),
+              onSubmitted: (val) => Navigator.of(dialogCtx).pop(val),
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -625,11 +676,13 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
         : await widget.auth.unlockWithPassword(secret);
     
     result = await widget.auth.verify(result);
-    return result.ok && result.kind == widget.repo!.kind;
-  }
-
-  Future<bool> _confirmRestoreCredential() async {
-    return await _authenticateForAction('Authenticate for Restore');
+    final success = result.ok && result.kind == widget.repo!.kind;
+    
+    if (!success && mounted) {
+      _notify('Authentication failed: Invalid password', error: true);
+    }
+    
+    return success;
   }
 
   // ── Biometric ─────────────────────────────────────────────────────────────
@@ -951,10 +1004,20 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
     final gdriveSignedIn =
         _googleEmail != null || (gdriveService?.isAuthenticated ?? false);
     final gdriveEmail = _googleEmail ?? gdriveService?.signedInEmail;
-    final lastBackupAt =
-        Hive.box('vaultx_settings').get('lastBackupAt') as String?;
     final lastGoogleBackupAt =
         Hive.box('vaultx_settings').get('lastGoogleBackupAt') as String?;
+    final lastMegaBackupAt =
+        Hive.box('vaultx_settings').get('lastMegaBackupAt') as String?;
+
+    // Use the most recent cloud backup for the dashboard
+    String? overallLastBackupAt;
+    final googleDt = DateTime.tryParse(lastGoogleBackupAt ?? '');
+    final megaDt = DateTime.tryParse(lastMegaBackupAt ?? '');
+    if (googleDt != null && megaDt != null) {
+      overallLastBackupAt = googleDt.isAfter(megaDt) ? lastGoogleBackupAt : lastMegaBackupAt;
+    } else {
+      overallLastBackupAt = lastGoogleBackupAt ?? lastMegaBackupAt;
+    }
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -970,7 +1033,7 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
           posture: widget.posture,
           failedPinAttempts: appState.failedPinAttempts,
           lockMinutes: _lockMinutes,
-          lastBackupAt: lastBackupAt,
+          lastBackupAt: overallLastBackupAt,
         ),
         const SizedBox(height: 16),
 
@@ -1259,47 +1322,39 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
         ],
         const Divider(height: 32),
 
-        // ── Local Backup ──────────────────────────────────────────────────
+        // ── Trash ────────────────────────────────────────────────────────
         const Text(
-          'Local Backup',
+          'Trash',
           style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
         ),
         const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: _exportLocalBackup,
-                icon: const Icon(Icons.file_download),
-                label: const Text('Export encrypted backup'),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: _restoreLocalBackup,
-                icon: const Icon(Icons.restore),
-                label: const Text('Restore backup'),
-              ),
-            ),
-          ],
-        ),
-        if (lastBackupAt != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text(
-              'Last local backup: ${DateTime.tryParse(lastBackupAt)?.toLocal() ?? lastBackupAt}',
-              style: TextStyle(
-                fontSize: 12,
-                color: Theme.of(
-                  context,
-                ).colorScheme.onSurface.withValues(alpha: 0.5),
-              ),
-            ),
+        Text(
+          'Deleted items are kept in the trash for 30 days before being permanently removed.',
+          style: TextStyle(
+            fontSize: 13,
+            color: Theme.of(
+              context,
+            ).colorScheme.onSurface.withValues(alpha: 0.5),
           ),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: () {
+              if (widget.trashService != null) {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => TrashScreen(trashService: widget.trashService!),
+                  ),
+                );
+              }
+            },
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('View Trash'),
+          ),
+        ),
         const Divider(height: 32),
-
-        // ── Bulk Import ───────────────────────────────────────────────────
         const Text(
           'Bulk Import',
           style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
@@ -1321,6 +1376,32 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
             onPressed: _importBulkNotesZip,
             icon: const Icon(Icons.unarchive),
             label: const Text('Import Notes from ZIP'),
+          ),
+        ),
+        const Divider(height: 32),
+
+        // ── Bulk Export ───────────────────────────────────────────────────
+        const Text(
+          'Bulk Export',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Export the entire vault (including hidden notes, attachments, and folder structure) as a secure ZIP archive.',
+          style: TextStyle(
+            fontSize: 13,
+            color: Theme.of(
+              context,
+            ).colorScheme.onSurface.withValues(alpha: 0.5),
+          ),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            onPressed: _exportVaultZip,
+            icon: const Icon(Icons.archive),
+            label: const Text('Export Vault to ZIP'),
           ),
         ),
         const Divider(height: 32),
@@ -2464,4 +2545,3 @@ class _BiometricPasswordDialogState extends State<_BiometricPasswordDialog> {
     );
   }
 }
-

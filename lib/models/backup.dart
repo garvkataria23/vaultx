@@ -1,6 +1,164 @@
 import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
+/// Supported cloud storage providers for encrypted backups.
+enum CloudProvider {
+  googleDrive,
+  mega;
+
+  String get displayName {
+    switch (this) {
+      case CloudProvider.googleDrive:
+        return 'Google Drive';
+      case CloudProvider.mega:
+        return 'MEGA';
+    }
+  }
+
+  String get iconAsset {
+    switch (this) {
+      case CloudProvider.googleDrive:
+        return 'google_drive';
+      case CloudProvider.mega:
+        return 'mega';
+    }
+  }
+
+  /// Persist single-provider selection (legacy).
+  Future<void> save() async {
+    await Hive.box('vaultx_settings').put('cloudProvider', name);
+  }
+
+  /// Load single provider (legacy, defaults to googleDrive).
+  static CloudProvider load() {
+    final raw = Hive.box('vaultx_settings').get('cloudProvider') as String?;
+    if (raw == null) return CloudProvider.googleDrive;
+    return CloudProvider.values.firstWhere(
+      (p) => p.name == raw,
+      orElse: () => CloudProvider.googleDrive,
+    );
+  }
+
+  /// Persist the set of enabled providers.
+  static Future<void> saveEnabled(Set<CloudProvider> providers) async {
+    await Hive.box('vaultx_settings').put(
+      'enabledCloudProviders',
+      providers.map((p) => p.name).toList(),
+    );
+  }
+
+  /// Load enabled providers (defaults to [googleDrive] for backward compat).
+  static Set<CloudProvider> loadEnabled() {
+    final raw = Hive.box('vaultx_settings').get('enabledCloudProviders') as List?;
+    if (raw == null || raw.isEmpty) {
+      // Migrate from legacy single-provider setting
+      final legacy = load();
+      return {legacy};
+    }
+    return raw.map((e) {
+      if (e == 'local') return CloudProvider.googleDrive;
+      return CloudProvider.values.firstWhere(
+        (p) => p.name == e,
+        orElse: () => CloudProvider.googleDrive,
+      );
+    }).toSet();
+  }
+
+  /// Persist auto-backup toggle per provider.
+  static Future<void> saveAutoBackup(CloudProvider provider, bool enabled) async {
+    await Hive.box('vaultx_settings').put('autoBackup_${provider.name}', enabled);
+  }
+
+  /// Load auto-backup toggle per provider (defaults true for legacy).
+  static bool loadAutoBackup(CloudProvider provider) {
+    return Hive.box('vaultx_settings').get(
+      'autoBackup_${provider.name}',
+      defaultValue: true,
+    ) as bool;
+  }
+}
+
+/// Per-provider operational state used by [BackupManager].
+class ProviderState {
+  final CloudProvider provider;
+  final bool enabled;
+  final bool connected;
+  final String? email;
+  final String? lastBackupAt;
+  final bool uploading;
+  final bool restoring;
+  final String? error;
+  final double uploadProgress;
+  final String? uploadPhase;
+  final int uploadedBytes;
+  final int totalBytes;
+
+  const ProviderState({
+    required this.provider,
+    this.enabled = true,
+    this.connected = false,
+    this.email,
+    this.lastBackupAt,
+    this.uploading = false,
+    this.restoring = false,
+    this.error,
+    this.uploadProgress = 0.0,
+    this.uploadPhase,
+    this.uploadedBytes = 0,
+    this.totalBytes = 0,
+  });
+
+  ProviderState copyWith({
+    CloudProvider? provider,
+    bool? enabled,
+    bool? connected,
+    String? email,
+    String? lastBackupAt,
+    bool? uploading,
+    bool? restoring,
+    String? error,
+    double? uploadProgress,
+    String? uploadPhase,
+    int? uploadedBytes,
+    int? totalBytes,
+    bool clearError = false,
+  }) =>
+      ProviderState(
+        provider: provider ?? this.provider,
+        enabled: enabled ?? this.enabled,
+        connected: connected ?? this.connected,
+        email: email ?? this.email,
+        lastBackupAt: lastBackupAt ?? this.lastBackupAt,
+        uploading: uploading ?? this.uploading,
+        restoring: restoring ?? this.restoring,
+        error: clearError ? null : (error ?? this.error),
+        uploadProgress: uploadProgress ?? this.uploadProgress,
+        uploadPhase: uploadPhase ?? this.uploadPhase,
+        uploadedBytes: uploadedBytes ?? this.uploadedBytes,
+        totalBytes: totalBytes ?? this.totalBytes,
+      );
+}
+
+/// Storage quota info for a cloud provider.
+class StorageInfo {
+  final CloudProvider provider;
+  final int usedBytes;
+  final int totalBytes;
+  final int backupFileCount;
+  final int backupBytes;
+
+  const StorageInfo({
+    required this.provider,
+    this.usedBytes = 0,
+    this.totalBytes = 0,
+    this.backupFileCount = 0,
+    this.backupBytes = 0,
+  });
+
+  double get usageFraction => totalBytes > 0 ? usedBytes / totalBytes : 0.0;
+  int get freeBytes => totalBytes - usedBytes;
+}
+
 /// Components included in a VaultX backup.
 enum BackupComponent {
   mainVault,
@@ -214,7 +372,7 @@ class BackupManifest {
   }
 }
 
-/// Metadata about a backup stored on Google Drive.
+/// Metadata about a backup stored on a cloud provider.
 class BackupVersion {
   final String driveFileId;
   final String fileName;
@@ -225,6 +383,7 @@ class BackupVersion {
   final int driveFileCount;
   final int passwordEntryCount;
   final bool hasAuthBundle;
+  final CloudProvider provider;
 
   const BackupVersion({
     required this.driveFileId,
@@ -236,6 +395,7 @@ class BackupVersion {
     this.driveFileCount = 0,
     this.passwordEntryCount = 0,
     this.hasAuthBundle = false,
+    this.provider = CloudProvider.googleDrive,
   });
 
   String get label {

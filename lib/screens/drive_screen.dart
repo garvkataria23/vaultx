@@ -2,20 +2,17 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
-import '../models/drive_file.dart';
+import '../models/models.dart';
 import '../services/item_action_service.dart';
 import '../services/auth_service.dart';
-import 'vaultx_app.dart';
-import '../widgets/swipe_action_tile.dart';
 import '../services/decoy_seed_service.dart';
 import '../services/drive_service.dart';
 import '../services/compression_service.dart';
 import '../widgets/smart_compression_sheet.dart';
 import '../widgets/document_conversion_sheet.dart';
 import '../services/password_vault_service.dart';
-import '../widgets/drive_file_tile.dart';
+import '../widgets/widgets.dart';
 import 'drive_file_viewer.dart';
 import 'password_manager_screen.dart';
 import '../services/floating_notification_service.dart';
@@ -63,6 +60,7 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
   String? _loadError;
   final _searchCtrl = TextEditingController();
   String _searchQuery = '';
+  final Set<String> _selectedIds = {};
 
   @override
   void initState() {
@@ -153,6 +151,173 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
       _filtered = _files.where((f) => _isFolderAccessible(f.folder)).toList();
     }
   }
+
+  Future<bool> _authenticateForAction(String title) async {
+    // Enable screen protection during sensitive operations
+    await SecurityPlatform.enableScreenProtection();
+
+    final auth = widget.auth ?? VaultAuthService();
+    final bioEnabled = await auth.isBiometricUnlockAvailable();
+    if (bioEnabled) {
+      final ok = await auth.authenticateBiometric();
+      if (ok) return true;
+    }
+
+    if (!mounted) return false;
+
+    // Fallback to password/PIN
+    final ctrl = TextEditingController();
+    final secret = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogCtx) => AlertDialog(
+        title: Text(title),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Enter your ${widget.isDecoy ? 'decoy' : 'master'} password to continue.',
+              style: const TextStyle(fontSize: 13),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: ctrl,
+              obscureText: true,
+              autofocus: true,
+              decoration: InputDecoration(
+                labelText: widget.isDecoy ? 'Decoy password' : 'Master password',
+                border: const OutlineInputBorder(),
+              ),
+              onSubmitted: (val) => Navigator.of(dialogCtx).pop(val),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(ctrl.text),
+            child: const Text('Verify'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+
+    if (secret == null || secret.isEmpty) return false;
+    
+    bool success = false;
+    if (widget.isDecoy) {
+      success = await auth.verifyDecoyPassword(secret);
+    } else {
+      var result = await auth.unlockWithPassword(secret);
+      result = await auth.verify(result);
+      success = result.ok && result.kind != VaultKind.decoy;
+    }
+    
+    if (!success && mounted) {
+      FloatingNotificationService.instance.show('Authentication failed: Invalid password', error: true);
+    }
+    
+    return success;
+  }
+
+  void _onSelectionToggle(SecureDriveFile file) {
+    setState(() {
+      if (_selectedIds.contains(file.id)) {
+        _selectedIds.remove(file.id);
+      } else {
+        _selectedIds.add(file.id);
+      }
+    });
+  }
+
+  void _selectAll() {
+    setState(() {
+      for (final f in _filtered) {
+        _selectedIds.add(f.id);
+      }
+    });
+  }
+
+  void _deselectAll() {
+    setState(() {
+      _selectedIds.clear();
+    });
+  }
+
+  Future<void> _bulkAction(String action) async {
+    final selectedFiles = _files.where((f) => _selectedIds.contains(f.id)).toList();
+    if (selectedFiles.isEmpty) return;
+
+    final authenticated = await _authenticateForAction('Bulk $action');
+    if (!authenticated) return;
+
+    switch (action) {
+      case 'delete':
+        final confirm = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: Text('Delete ${selectedFiles.length} files?'),
+            content: const Text('These files will be moved to trash.'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete')),
+            ],
+          ),
+        );
+        if (confirm != true) return;
+        for (final f in selectedFiles) {
+          if (widget.isDecoy) {
+            _files.removeWhere((file) => file.id == f.id);
+          } else {
+            await widget.drive!.moveToTrash(f);
+          }
+        }
+        FloatingNotificationService.instance.show('${selectedFiles.length} files moved to trash');
+        break;
+      case 'favorite':
+        for (final f in selectedFiles) {
+          if (!widget.isDecoy) {
+            await widget.drive!.toggleFavorite(f.id);
+          }
+        }
+        break;
+      case 'move':
+        final folder = await showModalBottomSheet<String>(
+          context: context,
+          builder: (ctx) => SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const ListTile(title: Text('Move to folder', style: TextStyle(fontWeight: FontWeight.bold))),
+                ...SecureDriveFile.folders.map((f) => ListTile(
+                  leading: const Icon(Icons.folder_outlined),
+                  title: Text(f),
+                  onTap: () => Navigator.pop(ctx, f),
+                )),
+              ],
+            ),
+          ),
+        );
+        if (folder != null) {
+          for (final f in selectedFiles) {
+            if (!widget.isDecoy) {
+              await widget.drive!.moveFile(f.id, folder);
+            }
+          }
+          FloatingNotificationService.instance.show('Moved ${selectedFiles.length} files to $folder');
+        }
+        break;
+    }
+
+    _deselectAll();
+    _load();
+  }
+
   Future<bool> _unlockFolder(String folderName) async {
     final isLockedByDefault = folderName == 'Passwords';
     final meta = _folderMetadata[folderName];
@@ -161,34 +326,7 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
     if (!isLocked) return true;
     if (_sessionUnlockedFolders.contains(folderName)) return true;
 
-    final auth = widget.auth ?? VaultAuthService();
-    final appState = Provider.of<VaultAppState>(context, listen: false);
-    bool authenticated = false;
-
-    if (await auth.isBiometricUnlockAvailable() && !appState.isBiometricEscalated) {
-      authenticated = await auth.authenticateBiometric();
-      if (authenticated) {
-        appState.resetBiometricAttempts();
-      } else {
-        await appState.recordFailedBiometricAttempt();
-      }
-    }
-
-    if (!authenticated && mounted) {
-      final password = await _showPasswordDialog(
-        title: 'Unlock Folder',
-        label: 'Enter master password',
-      );
-      if (password != null) {
-        final result = await auth.unlockWithPassword(password);
-        final verified = await auth.verify(result);
-        authenticated = verified.ok;
-        if (authenticated) {
-          appState.resetBiometricAttempts();
-          appState.resetPinAttempts();
-        }
-      }
-    }
+    final authenticated = await _authenticateForAction('Unlock Folder');
 
     if (authenticated) {
       if (mounted) {
@@ -200,18 +338,6 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
       return true;
     }
     return false;
-  }
-
-  Future<String?> _showPasswordDialog({
-    required String title,
-    required String label,
-  }) async {
-    return showDialog<String>(
-      context: context,
-      builder: (context) {
-        return _PasswordDialog(title: title, label: label);
-      },
-    );
   }
 
   bool _isImporting = false;
@@ -240,8 +366,8 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete file'),
-        content: Text('Permanently delete "${file.name}"?'),
+        title: const Text('Move to Trash'),
+        content: Text('Move "${file.name}" to trash? You can restore it within 30 days.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -249,10 +375,7 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
-            style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(ctx).colorScheme.error,
-            ),
-            child: const Text('Delete'),
+            child: const Text('Move to Trash'),
           ),
         ],
       ),
@@ -266,14 +389,43 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
       });
       return;
     }
-    final ok = await widget.drive!.deleteFile(file);
-    if (ok && mounted) {
+    await widget.drive!.moveToTrash(file);
+    if (mounted) {
       setState(() {
         _files.removeWhere((f) => f.id == file.id);
         _folders = widget.drive!.getFolders();
         _applyFilter();
       });
-      FloatingNotificationService.instance.show('Deleted ${file.name}');
+      FloatingNotificationService.instance.show('File moved to trash');
+    }
+  }
+
+  Future<void> _deleteFolder(String folderName) async {
+    final meta = _folderMetadata[folderName] ?? SecureDriveFolder(name: folderName);
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Move Folder to Trash'),
+        content: Text('Move folder "$folderName" and all its files to trash?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Move to Trash'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    if (!mounted) return;
+    
+    await widget.drive!.moveFolderToTrash(meta);
+    if (mounted) {
+      await _load();
+      FloatingNotificationService.instance.show('Folder moved to trash');
     }
   }
 
@@ -867,6 +1019,40 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
   }
 
   PreferredSizeWidget _buildAppBar(ColorScheme cs) {
+    final isSelectionMode = _selectedIds.isNotEmpty;
+
+    if (isSelectionMode) {
+      return AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.close),
+          onPressed: _deselectAll,
+        ),
+        title: Text('${_selectedIds.length} selected'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.star_outline),
+            onPressed: () => _bulkAction('favorite'),
+          ),
+          IconButton(
+            icon: const Icon(Icons.drive_file_move_outlined),
+            onPressed: () => _bulkAction('move'),
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_outline),
+            onPressed: () => _bulkAction('delete'),
+          ),
+          PopupMenuButton<String>(
+            onSelected: (v) {
+              if (v == 'select_all') _selectAll();
+            },
+            itemBuilder: (ctx) => [
+              const PopupMenuItem(value: 'select_all', child: Text('Select all')),
+            ],
+          ),
+        ],
+      );
+    }
+
     if (_view == _DriveView.search) {
       return AppBar(
         leading: IconButton(
@@ -1121,7 +1307,7 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
                     case SwipeAction.archive:
                       _toggleFolderExclusion(entry.key);
                     case SwipeAction.delete:
-                      FloatingNotificationService.instance.show('Delete folder not implemented yet', error: true);
+                      _deleteFolder(entry.key);
                     default:
                       break;
                   }
@@ -1260,63 +1446,78 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
       );
     }
 
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: ListView.builder(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 80),
-        itemCount: _filtered.length,
-        itemBuilder: (_, i) => DriveFileTile(
-          file: _filtered[i],
-          onTap: () => _openFile(_filtered[i]),
-          onDelete: () async {
-            if (widget.itemActions != null) {
-              await widget.itemActions!.deleteFile(context, _filtered[i]);
-              await _load();
-            } else {
-              _deleteFile(_filtered[i]);
-            }
-          },
-          onFavorite: () async {
-            if (widget.isDecoy) {
-              if (mounted) setState(() => _applyFilter());
-            } else {
-              await widget.drive!.toggleFavorite(_filtered[i].id);
-              if (mounted) setState(() => _applyFilter());
-            }
-          },
-          onMove: widget.isDecoy
-              ? null
-              : (folder) async {
-                  await widget.drive!.moveFile(_filtered[i].id, folder);
-                  if (mounted) {
-                    setState(() {
-                      _folders = widget.drive!.getFolders();
-                      _applyFilter();
-                    });
+    return Column(
+      children: [
+        SelectionBanner(
+          selectedCount: _selectedIds.length,
+          totalCount: _filtered.length,
+          onSelectAll: _selectAll,
+          onClear: _deselectAll,
+          itemName: 'files',
+        ),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: _load,
+            child: ListView.builder(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 80),
+              itemCount: _filtered.length,
+              itemBuilder: (_, i) => DriveFileTile(
+                file: _filtered[i],
+                isSelected: _selectedIds.contains(_filtered[i].id),
+                onSelectionToggle: () => _onSelectionToggle(_filtered[i]),
+                onTap: () => _openFile(_filtered[i]),
+                onDelete: () async {
+                  if (widget.itemActions != null) {
+                    await widget.itemActions!.deleteFile(context, _filtered[i]);
+                    await _load();
+                  } else {
+                    _deleteFile(_filtered[i]);
                   }
                 },
-          onTogglePin: () async {
-            if (widget.itemActions != null) {
-              await widget.itemActions!.pinFile(context, _filtered[i]);
-              await _load();
-            }
-          },
-          onToggleArchive: () async {
-            if (widget.itemActions != null) {
-              await widget.itemActions!.archiveFile(context, _filtered[i]);
-              await _load();
-            }
-          },
-          onShare: () async {
-            if (widget.itemActions != null) {
-              await widget.itemActions!.shareFile(context, _filtered[i]);
-            }
-          },
-          onCompress: () => _compressFile(_filtered[i]),
-          onConvert: () => _convertFile(_filtered[i]),
-          onToggleBackup: () => _toggleFileBackup(_filtered[i]),
+                onFavorite: () async {
+                  if (widget.isDecoy) {
+                    if (mounted) setState(() => _applyFilter());
+                  } else {
+                    await widget.drive!.toggleFavorite(_filtered[i].id);
+                    if (mounted) setState(() => _applyFilter());
+                  }
+                },
+                onMove: widget.isDecoy
+                    ? null
+                    : (folder) async {
+                        await widget.drive!.moveFile(_filtered[i].id, folder);
+                        if (mounted) {
+                          setState(() {
+                            _folders = widget.drive!.getFolders();
+                            _applyFilter();
+                          });
+                        }
+                      },
+                onTogglePin: () async {
+                  if (widget.itemActions != null) {
+                    await widget.itemActions!.pinFile(context, _filtered[i]);
+                    await _load();
+                  }
+                },
+                onToggleArchive: () async {
+                  if (widget.itemActions != null) {
+                    await widget.itemActions!.archiveFile(context, _filtered[i]);
+                    await _load();
+                  }
+                },
+                onShare: () async {
+                  if (widget.itemActions != null) {
+                    await widget.itemActions!.shareFile(context, _filtered[i]);
+                  }
+                },
+                onCompress: () => _compressFile(_filtered[i]),
+                onConvert: () => _convertFile(_filtered[i]),
+                onToggleBackup: () => _toggleFileBackup(_filtered[i]),
+              ),
+            ),
+          ),
         ),
-      ),
+      ],
     );
   }
 

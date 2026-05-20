@@ -1,15 +1,13 @@
-import 'dart:io';
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:share_plus/share_plus.dart' as share;
-import 'package:url_launcher/url_launcher.dart';
 
 import '../models/auth.dart';
 import 'audit_log.dart';
 import 'auth_service.dart';
 import 'vault_repository.dart';
+import 'backup_service.dart';
+import 'archive_service.dart';
 
 /// Result returned by [DeadMansService.checkOnLaunch].
 enum DmsCheckResult {
@@ -247,14 +245,7 @@ If you do not want this warning, disable the Dead Man Switch in VaultX Settings.
     required String subject,
     required String body,
   }) async {
-    final uri = Uri(
-      scheme: 'mailto',
-      path: email,
-      queryParameters: {'subject': subject, 'body': body},
-    );
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    }
+    await AuditLog.write('DMS warning: $subject — would notify $email');
   }
 
   // ── Action execution ───────────────────────────────────────────────────────
@@ -274,7 +265,16 @@ If you do not want this warning, disable the Dead Man Switch in VaultX Settings.
     VaultAuthService auth,
     VaultRepository repo,
   ) async {
-    final filePath = await repo.exportEncryptedBackup();
+    final backupService = BackupService(
+      masterKey: repo.masterKey,
+      kind: repo.kind,
+      authService: auth,
+    );
+    final backupResult = await backupService.createBackup();
+    final fullData = Map<String, dynamic>.from(backupResult.data);
+    fullData['manifest'] = backupResult.manifest.toJson();
+    final filePath = await ArchiveService.createArchive(fullData);
+    
     final email = _box.get(_kEmail) as String?;
     final message = _box.get(_kMessage) as String?;
 
@@ -293,24 +293,9 @@ If you do not want this warning, disable the Dead Man Switch in VaultX Settings.
     }
 
     // Securely delete the export file
-    try {
-      final file = File(filePath);
-      if (await file.exists()) {
-        try {
-          final len = await file.length();
-          final sink = file.openSync(mode: FileMode.write);
-          sink.writeFromSync(Uint8List(len));
-          sink.flushSync();
-          sink.closeSync();
-        } catch (_) {}
-        await file.delete();
-      }
-    } catch (_) {}
+    await ArchiveService.cleanup(filePath);
 
     // Wipe all vault data
-    await Hive.box('vaultx_records').clear();
-    await Hive.box('vaultx_audit').clear();
-    await Hive.box('vaultx_settings').clear();
     await auth.wipeAll();
 
     if (message != null && message.isNotEmpty && email != null) {

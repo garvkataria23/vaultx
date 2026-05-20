@@ -13,6 +13,11 @@ enum NoteCategory {
   travel,
   legal,
   social,
+  ideas,
+  projects,
+  receipts,
+  media,
+  passwords,
 }
 
 /// Result of analyzing a single note.
@@ -24,6 +29,7 @@ class NoteAnalysis {
   final List<String> sensitiveTypes;
   final bool isDuplicate;
   final String? duplicateOfId;
+  final List<String> relatedNoteIds;
 
   const NoteAnalysis({
     this.category = NoteCategory.general,
@@ -33,6 +39,7 @@ class NoteAnalysis {
     this.sensitiveTypes = const [],
     this.isDuplicate = false,
     this.duplicateOfId,
+    this.relatedNoteIds = const [],
   });
 }
 
@@ -46,244 +53,81 @@ class NoteAnalyzerService {
 
   static const _categoryKeywords = <NoteCategory, List<String>>{
     NoteCategory.finance: [
-      'bank',
-      'account',
-      'money',
-      'transaction',
-      'payment',
-      'invoice',
-      'receipt',
-      'tax',
-      'salary',
-      'credit',
-      'debit',
-      'loan',
-      'mortgage',
-      'investment',
-      'stock',
-      'crypto',
-      'wallet',
-      'balance',
-      'budget',
-      'expense',
-      'income',
-      'finance',
-      'bill',
-      'insurance',
-      'refund',
+      'bank', 'account', 'money', 'transaction', 'payment', 'invoice', 'receipt',
+      'tax', 'salary', 'credit', 'debit', 'loan', 'mortgage', 'investment',
+      'stock', 'crypto', 'wallet', 'balance', 'budget', 'expense', 'income',
+      'finance', 'bill', 'insurance', 'refund', 'upi', 'paytm', 'gpay',
     ],
     NoteCategory.work: [
-      'meeting',
-      'project',
-      'deadline',
-      'client',
-      'report',
-      'presentation',
-      'agenda',
-      'minutes',
-      'task',
-      'sprint',
-      'review',
-      'feedback',
-      'proposal',
-      'contract',
-      'timesheet',
-      'email',
-      'call',
-      'interview',
-      'standup',
-      'deliverable',
-      'milestone',
-      'objective',
-      'kpi',
+      'meeting', 'project', 'deadline', 'client', 'report', 'presentation',
+      'agenda', 'minutes', 'task', 'sprint', 'review', 'feedback', 'proposal',
+      'contract', 'timesheet', 'email', 'call', 'interview', 'standup',
+      'deliverable', 'milestone', 'objective', 'kpi', 'office', 'boss', 'manager',
     ],
     NoteCategory.personal: [
-      'diary',
-      'journal',
-      'todo',
-      'reminder',
-      'note',
-      'idea',
-      'thought',
-      'goal',
-      'habit',
-      'routine',
-      'wishlist',
-      'bucket',
-      'resolution',
-      'reflection',
-      'gratitude',
-      'mood',
-      'dream',
-      'memory',
+      'diary', 'journal', 'todo', 'reminder', 'note', 'idea', 'thought', 'goal',
+      'habit', 'routine', 'wishlist', 'bucket', 'resolution', 'reflection',
+      'gratitude', 'mood', 'dream', 'memory', 'life', 'home',
     ],
     NoteCategory.tech: [
-      'password',
-      'api',
-      'key',
-      'token',
-      'secret',
-      'config',
-      'code',
-      'snippet',
-      'command',
-      'terminal',
-      'script',
-      'server',
-      'database',
-      'endpoint',
-      'login',
-      'credential',
-      'ssh',
-      'oauth',
-      'url',
-      'link',
-      'protocol',
-      'algorithm',
-      'query',
-      'syntax',
-      'bug',
-      'deploy',
+      'password', 'api', 'key', 'token', 'secret', 'config', 'code', 'snippet',
+      'command', 'terminal', 'script', 'server', 'database', 'endpoint',
+      'login', 'credential', 'ssh', 'oauth', 'url', 'link', 'protocol',
+      'algorithm', 'query', 'syntax', 'bug', 'deploy', 'github', 'git', 'flutter',
     ],
     NoteCategory.health: [
-      'doctor',
-      'appointment',
-      'prescription',
-      'medication',
-      'symptom',
-      'diagnosis',
-      'therapy',
-      'workout',
-      'diet',
-      'nutrition',
-      'vitamin',
-      'exercise',
-      'sleep',
-      'heart',
-      'blood',
-      'weight',
-      'fitness',
-      'yoga',
-      'vaccine',
-      'allergy',
-      'insurance',
-      'hospital',
-      'clinic',
+      'doctor', 'appointment', 'prescription', 'medication', 'symptom',
+      'diagnosis', 'therapy', 'workout', 'diet', 'nutrition', 'vitamin',
+      'exercise', 'sleep', 'heart', 'blood', 'weight', 'fitness', 'yoga',
+      'vaccine', 'allergy', 'insurance', 'hospital', 'clinic', 'medical',
     ],
     NoteCategory.education: [
-      'course',
-      'lecture',
-      'study',
-      'exam',
-      'test',
-      'quiz',
-      'homework',
-      'assignment',
-      'grade',
-      'lesson',
-      'tutorial',
-      'book',
-      'article',
-      'research',
-      'paper',
-      'thesis',
-      'degree',
-      'certificate',
-      'training',
-      'workshop',
-      'seminar',
-      'class',
-      'note',
-      'summary',
-      'flashcard',
+      'course', 'lecture', 'study', 'exam', 'test', 'quiz', 'homework',
+      'assignment', 'grade', 'lesson', 'tutorial', 'book', 'article',
+      'research', 'paper', 'thesis', 'degree', 'certificate', 'training',
+      'workshop', 'seminar', 'class', 'note', 'summary', 'flashcard', 'physics',
+      'math', 'dbms', 'algorithm', 'college', 'university', 'viva',
     ],
     NoteCategory.shopping: [
-      'buy',
-      'purchase',
-      'order',
-      'cart',
-      'wishlist',
-      'grocery',
-      'store',
-      'shop',
-      'price',
-      'discount',
-      'coupon',
-      'deal',
-      'offer',
-      'delivery',
-      'amazon',
-      'checkout',
-      'return',
-      'refund',
-      'brand',
-      'size',
-      'color',
+      'buy', 'purchase', 'order', 'cart', 'wishlist', 'grocery', 'store',
+      'shop', 'price', 'discount', 'coupon', 'deal', 'offer', 'delivery',
+      'amazon', 'checkout', 'return', 'refund', 'brand', 'size', 'color',
     ],
     NoteCategory.travel: [
-      'trip',
-      'flight',
-      'hotel',
-      'booking',
-      'itinerary',
-      'destination',
-      'passport',
-      'visa',
-      'packing',
-      'luggage',
-      'tour',
-      'map',
-      'direction',
-      'reservation',
-      'checkin',
-      'airport',
-      'rental',
-      'vacation',
-      'holiday',
-      'road',
-      'travel',
-      'abroad',
-      'sightseeing',
+      'trip', 'flight', 'hotel', 'booking', 'itinerary', 'destination',
+      'passport', 'visa', 'packing', 'luggage', 'tour', 'map', 'direction',
+      'reservation', 'checkin', 'airport', 'rental', 'vacation', 'holiday',
+      'road', 'travel', 'abroad', 'sightseeing',
     ],
     NoteCategory.legal: [
-      'contract',
-      'agreement',
-      'terms',
-      'policy',
-      'disclosure',
-      'license',
-      'permit',
-      'registration',
-      'trademark',
-      'copyright',
-      'will',
-      'estate',
-      'tenant',
-      'lease',
-      'notice',
-      'waiver',
-      'affidavit',
-      'attorney',
+      'contract', 'agreement', 'terms', 'policy', 'disclosure', 'license',
+      'permit', 'registration', 'trademark', 'copyright', 'will', 'estate',
+      'tenant', 'lease', 'notice', 'waiver', 'affidavit', 'attorney',
     ],
     NoteCategory.social: [
-      'party',
-      'event',
-      'invitation',
-      'rsvp',
-      'celebration',
-      'birthday',
-      'wedding',
-      'anniversary',
-      'gathering',
-      'friend',
-      'family',
-      'date',
-      'dinner',
-      'lunch',
-      'coffee',
-      'meetup',
-      'concert',
-      'festival',
+      'party', 'event', 'invitation', 'rsvp', 'celebration', 'birthday',
+      'wedding', 'anniversary', 'gathering', 'friend', 'family', 'date',
+      'dinner', 'lunch', 'coffee', 'meetup', 'concert', 'festival',
+    ],
+    NoteCategory.ideas: [
+      'idea', 'brainstorm', 'innovation', 'concept', 'startup', 'new', 'creative',
+      'vision', 'future', 'possibility', 'draft', 'sketch',
+    ],
+    NoteCategory.projects: [
+      'project', 'roadmap', 'phase', 'milestone', 'kanban', 'board', 'team',
+      'collaboration', 'status', 'ongoing', 'backlog',
+    ],
+    NoteCategory.receipts: [
+      'receipt', 'invoice', 'bill', 'purchase', 'order', 'transaction',
+      'amount', 'total', 'paid', 'gst', 'vat', 'tax',
+    ],
+    NoteCategory.media: [
+      'photo', 'video', 'audio', 'voice', 'recording', 'image', 'picture',
+      'gallery', 'album', 'music', 'sound', 'movie', 'film',
+    ],
+    NoteCategory.passwords: [
+      'password', 'login', 'account', 'username', 'credential', 'secret',
+      'access', 'security', 'mfa', '2fa', 'otp',
     ],
   };
 
@@ -313,14 +157,15 @@ class NoteAnalyzerService {
 
   /// Analyze a single note and return its analysis.
   NoteAnalysis analyze(SecureNote note, {List<SecureNote>? allNotes}) {
-    final text = '${note.title} ${note.body} ${note.ocrText}'.toLowerCase();
-    final category = _classify(text);
+    final text = '${note.title} ${note.body} ${note.ocrText} ${note.summary}'.toLowerCase();
+    final category = _classify(note, text);
     final suggestedTags = _extractTags(text, note.tags);
     final suggestedFolder = _suggestFolder(category, note.folder);
     final sensitive = _detectSensitive(
       '${note.title}\n${note.body}\n${note.ocrText}',
     );
     final duplicate = allNotes != null ? _findDuplicate(note, allNotes) : null;
+    final related = allNotes != null ? _findRelated(note, allNotes) : <String>[];
 
     return NoteAnalysis(
       category: category,
@@ -330,6 +175,7 @@ class NoteAnalyzerService {
       sensitiveTypes: sensitive,
       isDuplicate: duplicate != null,
       duplicateOfId: duplicate?.id,
+      relatedNoteIds: related,
     );
   }
 
@@ -342,10 +188,17 @@ class NoteAnalyzerService {
   Map<NoteCategory, List<SecureNote>> groupByCategory(List<SecureNote> notes) {
     final grouped = <NoteCategory, List<SecureNote>>{};
     for (final note in notes) {
-      final cat = _classify('${note.title} ${note.body} ${note.ocrText}');
+      final text = '${note.title} ${note.body} ${note.ocrText} ${note.summary}'.toLowerCase();
+      final cat = _classify(note, text);
       grouped.putIfAbsent(cat, () => []).add(note);
     }
     return grouped;
+  }
+
+  /// Find related notes for a specific note.
+  List<SecureNote> findRelatedNotes(SecureNote note, List<SecureNote> allNotes) {
+    final relatedIds = _findRelated(note, allNotes);
+    return allNotes.where((n) => relatedIds.contains(n.id)).toList();
   }
 
   /// Find notes with sensitive data.
@@ -376,17 +229,76 @@ class NoteAnalyzerService {
 
   // ── Internal helpers ──────────────────────────────────────────────────────
 
-  NoteCategory _classify(String text) {
-    final scores = <NoteCategory, int>{};
+  NoteCategory _classify(SecureNote note, String text) {
+    final scores = <NoteCategory, double>{};
+    
+    // 1. Keyword scoring
     for (final entry in _categoryKeywords.entries) {
-      var score = 0;
+      var score = 0.0;
       for (final keyword in entry.value) {
-        if (text.contains(keyword)) score++;
+        if (text.contains(keyword)) {
+          // Keywords in title or summary have higher weight
+          if (note.title.toLowerCase().contains(keyword)) score += 2.0;
+          if (note.summary.toLowerCase().contains(keyword)) score += 1.5;
+          score += 1.0;
+        }
       }
       if (score > 0) scores[entry.key] = score;
     }
+
+    // 2. Attachment-based signals
+    for (final att in note.attachments) {
+      final name = att.name.toLowerCase();
+      if (att.kind == 'image' || att.kind == 'video' || att.kind == 'audio' || att.kind == 'voice') {
+        scores[NoteCategory.media] = (scores[NoteCategory.media] ?? 0.0) + 5.0;
+      }
+      if (name.contains('receipt') || name.contains('bill') || name.contains('invoice')) {
+        scores[NoteCategory.receipts] = (scores[NoteCategory.receipts] ?? 0.0) + 5.0;
+      }
+      if (name.endsWith('.pdf')) {
+        scores[NoteCategory.education] = (scores[NoteCategory.education] ?? 0.0) + 1.0;
+        scores[NoteCategory.work] = (scores[NoteCategory.work] ?? 0.0) + 1.0;
+      }
+    }
+
+    // 3. Type-based signals
+    if (note.type == NoteType.voice) {
+      scores[NoteCategory.media] = (scores[NoteCategory.media] ?? 0.0) + 3.0;
+    }
+
     if (scores.isEmpty) return NoteCategory.general;
+
+    // Pick highest score
     return scores.entries.reduce((a, b) => a.value > b.value ? a : b).key;
+  }
+
+  List<String> _findRelated(SecureNote note, List<SecureNote> allNotes) {
+    final results = <({String id, double score})>[];
+    
+    for (final other in allNotes) {
+      if (other.id == note.id) continue;
+      
+      double score = 0.0;
+      
+      // 1. Direct links (Direct link signal)
+      if (note.links.contains(other.id) || note.links.contains(other.title)) score += 10.0;
+      if (other.links.contains(note.id) || other.links.contains(note.title)) score += 10.0;
+      
+      // 2. Shared tags
+      final sharedTags = note.tags.toSet().intersection(other.tags.toSet());
+      score += sharedTags.length * 3.0;
+      
+      // 3. Content similarity
+      final sim = _contentSimilarity(note, other);
+      if (sim > 0.2) score += sim * 15.0;
+      
+      if (score > 3.0) {
+        results.add((id: other.id, score: score));
+      }
+    }
+    
+    results.sort((a, b) => b.score.compareTo(a.score));
+    return results.take(5).map((r) => r.id).toList();
   }
 
   List<String> _extractTags(String text, List<String> existingTags) {

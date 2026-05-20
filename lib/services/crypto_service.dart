@@ -1,6 +1,4 @@
-import 'dart:async';
 import 'dart:convert';
-import 'dart:isolate';
 import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:encrypt/encrypt.dart' as enc;
@@ -32,11 +30,10 @@ class CryptoService {
 
   /// Offloads Argon2id to an isolate so the UI thread stays responsive.
   Future<Uint8List> deriveCredentialKey(String secret, String saltB64) async {
-    final result = await _runIsolate(
-      (input) => _argon2Work(input as _Argon2Input),
+    return compute(
+      _argon2Work,
       _Argon2Input(secret: secret, saltB64: saltB64),
     );
-    return result;
   }
 
   /// Runs Argon2id — must be called inside an isolate (not on main thread).
@@ -160,10 +157,12 @@ class CryptoService {
     final body = encrypted.take(encrypted.length - tagLength).toList();
     final actualTag = encrypted.skip(encrypted.length - tagLength).toList();
     final expectedTag = Hmac(sha256, key).convert(body).bytes;
+    var macOk = 0;
     for (var i = 0; i < tagLength; i++) {
-      if (actualTag[i] != expectedTag[i]) {
-        throw const FormatException('Encrypted blob authentication failed');
-      }
+      macOk |= actualTag[i] ^ expectedTag[i];
+    }
+    if (macOk != 0) {
+      throw const FormatException('Encrypted blob authentication failed');
     }
     final iv = body.skip(headerLength).take(ivLength).toList();
     final cipher = body.skip(headerLength + ivLength).toList();
@@ -220,8 +219,8 @@ class CryptoService {
     List<BatchItem> items,
     Uint8List masterKey,
   ) async {
-    return _runIsolate(
-      (input) => _decryptBatchWork(input as _BatchInput),
+    return compute(
+      _decryptBatchWork,
       _BatchInput(masterKey: masterKey, items: items),
     );
   }
@@ -348,31 +347,6 @@ class CryptoService {
     );
   }
 
-  /// Runs [compute] in an isolate and returns the result.
-  static Future<T> _runIsolate<T>(
-    T Function(dynamic) computeFn,
-    dynamic message,
-  ) async {
-    final receive = ReceivePort();
-    try {
-      await Isolate.spawn(
-        _isolateEntry,
-        _IsolateMessage(computeFn, message, receive.sendPort),
-      );
-      return await receive.first as T;
-    } finally {
-      receive.close();
-    }
-  }
-
-  static void _isolateEntry(_IsolateMessage msg) {
-    try {
-      final result = msg.compute(msg.input);
-      msg.sendPort.send(result);
-    } catch (e) {
-      msg.sendPort.send(e);
-    }
-  }
 }
 
 Uint8List _encryptBytesWork(_EncryptBytesInput input) {
@@ -425,26 +399,28 @@ Uint8List _decryptBytesWork(_DecryptBytesInput input) {
   }
   final body = encrypted.take(encrypted.length - tagLength).toList();
   final actualTag = encrypted.skip(encrypted.length - tagLength).toList();
-  final expectedTag = Hmac(sha256, key).convert(body).bytes;
-  for (var i = 0; i < tagLength; i++) {
-    if (actualTag[i] != expectedTag[i]) {
+    final expectedTag = Hmac(sha256, key).convert(body).bytes;
+    var macOk = 0;
+    for (var i = 0; i < tagLength; i++) {
+      macOk |= actualTag[i] ^ expectedTag[i];
+    }
+    if (macOk != 0) {
       throw const FormatException('Encrypted blob authentication failed');
     }
+    final iv = body.skip(headerLength).take(ivLength).toList();
+    final cipher = body.skip(headerLength + ivLength).toList();
+    final aes = enc.Encrypter(
+      enc.AES(enc.Key(key), mode: enc.AESMode.cbc, padding: 'PKCS7'),
+    );
+    return Uint8List.fromList(
+      aes.decryptBytes(
+        enc.Encrypted(Uint8List.fromList(cipher)),
+        iv: enc.IV(Uint8List.fromList(iv)),
+      ),
+    );
   }
-  final iv = body.skip(headerLength).take(ivLength).toList();
-  final cipher = body.skip(headerLength + ivLength).toList();
-  final aes = enc.Encrypter(
-    enc.AES(enc.Key(key), mode: enc.AESMode.cbc, padding: 'PKCS7'),
-  );
-  return Uint8List.fromList(
-    aes.decryptBytes(
-      enc.Encrypted(Uint8List.fromList(cipher)),
-      iv: enc.IV(Uint8List.fromList(iv)),
-    ),
-  );
-}
 
-class _EncryptBytesInput {
+  class _EncryptBytesInput {
   final Uint8List value;
   final Uint8List key;
   _EncryptBytesInput({required this.value, required this.key});
@@ -475,9 +451,4 @@ class _BatchInput {
   _BatchInput({required this.masterKey, required this.items});
 }
 
-class _IsolateMessage {
-  final dynamic input;
-  final dynamic Function(dynamic) compute;
-  final SendPort sendPort;
-  _IsolateMessage(this.compute, this.input, this.sendPort);
-}
+

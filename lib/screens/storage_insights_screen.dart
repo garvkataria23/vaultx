@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../models/auth.dart';
+import '../services/format_utils.dart';
 import '../services/services.dart';
 
 class StorageInsightsScreen extends StatefulWidget {
@@ -124,7 +125,7 @@ class _StorageInsightsScreenState extends State<StorageInsightsScreen> {
             ),
             const Divider(height: 32),
             Text(
-              'Current Backup Size: ${_formatBytes(i.totalCloudSizeBytes)}',
+              'Current Backup Size: ${formatBytes(i.totalCloudSizeBytes)}',
               style: const TextStyle(fontWeight: FontWeight.w600),
             ),
           ],
@@ -152,7 +153,7 @@ class _StorageInsightsScreenState extends State<StorageInsightsScreen> {
               children: [
                 const Text('Total Potential Savings', style: TextStyle(fontWeight: FontWeight.bold)),
                 Text(
-                  _formatBytes(i.potentialSavingsBytes),
+                  formatBytes(i.potentialSavingsBytes),
                   style: TextStyle(color: cs.primary, fontWeight: FontWeight.bold),
                 ),
               ],
@@ -243,15 +244,10 @@ class _StorageInsightsScreenState extends State<StorageInsightsScreen> {
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Text(label, style: const TextStyle(fontSize: 14)),
-          Text(_formatBytes(bytes), style: TextStyle(fontSize: 14, color: cs.onSurfaceVariant)),
+          Text(formatBytes(bytes), style: TextStyle(fontSize: 14, color: cs.onSurfaceVariant)),
         ],
       ),
     );
   }
 
-  String _formatBytes(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1048576) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    return '${(bytes / 1048576).toStringAsFixed(1)} MB';
-  }
 }

@@ -21,6 +21,10 @@ class VaultAuthService {
   final _crypto = CryptoService();
   final _localAuth = LocalAuthentication();
 
+  /// Tracks consecutive secure storage failures to avoid aggressive Keystore resets.
+  int _storageFailureCount = 0;
+  static const int _maxStorageFailuresBeforeReset = 3;
+
   Future<bool> isInitialized() async {
     debugPrint('SECURE STORAGE INIT: checking passwordSalt');
     return (await _readSecure('passwordSalt')) != null;
@@ -467,12 +471,28 @@ class VaultAuthService {
   }
 
   Future<void> _recoverCorruptedSecureKey(String key) async {
-    debugPrint('KEYSTORE RESET: clearing corrupted secure storage key $key');
+    _storageFailureCount++;
+    debugPrint(
+      'STORAGE RECOVERY: failure #$_storageFailureCount for key $key',
+    );
+
+    // Only clear the single corrupted key — never reset the entire Keystore
+    // on every failure. Android Keystore reset destroys biometric keys and
+    // keys belonging to other apps. Only reset after 3 consecutive failures.
     try {
       await _storage.delete(key: key);
     } catch (_) {}
-    await SecurityPlatform.resetAndroidKeystore();
-    debugPrint('STORAGE RECOVERY: recovered secure storage key $key');
+
+    if (_storageFailureCount >= _maxStorageFailuresBeforeReset) {
+      debugPrint(
+        'KEYSTORE RESET: $_maxStorageFailuresBeforeReset failures — '
+        'resetting Android Keystore',
+      );
+      await SecurityPlatform.resetAndroidKeystore();
+      _storageFailureCount = 0;
+    }
+
+    debugPrint('STORAGE RECOVERY: recovered key $key');
   }
 }
 
@@ -481,6 +501,14 @@ class VaultAuthService {
 // ---------------------------------------------------------------------------
 
 class SecurityPlatform {
+  static bool _isSensitiveOperationActive = false;
+
+  static void setSensitiveOperationActive(bool active) {
+    _isSensitiveOperationActive = active;
+  }
+
+  static bool get isSensitiveOperationActive => _isSensitiveOperationActive;
+
   static Future<void> enableScreenProtection() async {
     try {
       await _secureChannel.invokeMethod('enableSecureWindow');

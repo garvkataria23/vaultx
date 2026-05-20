@@ -35,10 +35,10 @@ class ItemActionService {
   }
 
   Future<void> deleteNote(BuildContext context, SecureNote note) async {
-    await repo.delete(note.id);
+    await repo.moveToTrash(note);
     if (!context.mounted) return;
     HapticFeedback.heavyImpact();
-    _showSnackBar(context, 'Note deleted');
+    _showSnackBar(context, 'Note moved to trash');
   }
 
   Future<void> shareNote(BuildContext context, SecureNote note) async {
@@ -134,10 +134,10 @@ class ItemActionService {
   }
 
   Future<void> deleteFile(BuildContext context, SecureDriveFile file) async {
-    await drive.deleteFile(file);
+    await drive.moveToTrash(file);
     if (!context.mounted) return;
     HapticFeedback.heavyImpact();
-    _showSnackBar(context, 'File deleted');
+    _showSnackBar(context, 'File moved to trash');
   }
 
   Future<void> shareFile(BuildContext context, SecureDriveFile file) async {

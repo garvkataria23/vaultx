@@ -20,12 +20,12 @@ class ChatPage extends StatefulWidget {
   State<ChatPage> createState() => _ChatPageState();
 }
 
-class _ChatPageState extends State<ChatPage> {
-  Timer? poll;
-  Timer? typingTimer;
-  int lastMessageCount = 0;
-  int unreadCount = 0;
-  
+class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
+  Timer? _poll;
+  Timer? _typingTimer;
+  int _lastMessageCount = 0;
+  int _pollIntervalMs = 1500;
+  bool _isVisible = true;
 
   List<Map<String, dynamic>> messages = [];
   final TextEditingController _ctrl = TextEditingController();
@@ -35,76 +35,92 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
-    startPolling();
+    WidgetsBinding.instance.addObserver(this);
+    _schedulePoll();
   }
 
-  void startPolling() {
-  poll = Timer.periodic(const Duration(milliseconds: 500), (timer) async {
-    if (!mounted) return;
-
-    final data = await FB.fetchMessages(widget.gameId);
-
-    if (data != null) {
-      final msgs = data.entries.map((e) {
-        final m = Map<String, dynamic>.from(e.value);
-        m['id'] = e.key;
-        return m;
-      }).toList();
-
-      msgs.sort((a, b) => (a['time'] ?? 0).compareTo(b['time'] ?? 0));
-
-      // 🔥 NEW MESSAGE DETECTION
-       if (msgs.length > lastMessageCount && lastMessageCount != 0) {
-        final newMsg = msgs.last;
-
-        if (newMsg['sender'] != widget.myNum) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text("📩 New message received"),
-              duration: Duration(milliseconds: 800),
-            ),
-          );
-        }
-      }
-
-      // 🔥 UPDATE UI ONLY IF CHANGED
-      if (msgs.length != lastMessageCount) {
-        lastMessageCount = msgs.length;
-
-        setState(() {
-          messages = List<Map<String, dynamic>>.from(msgs.reversed);
-        });
-      }
-
-      // 🔥 MARK SEEN
-      for (var m in msgs) {
-        if (m['sender'] != widget.myNum && m['seen'] != true) {
-          FB.markSeen(widget.gameId, m['id']);
-        }
-      }
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _isVisible = state == AppLifecycleState.resumed;
+    if (_isVisible) {
+      _pollIntervalMs = 1500;
+      _schedulePoll();
     }
+  }
 
-    // 🔥 TYPING
-    final typingData = await FB.getTyping(widget.gameId);
+  void _schedulePoll() {
+    _poll?.cancel();
+    if (!_isVisible) return;
+    _poll = Timer(Duration(milliseconds: _pollIntervalMs), () => _pollNow());
+  }
 
-    if (!mounted) return;
+  Future<void> _pollNow() async {
+    if (!mounted || !_isVisible) return;
+    try {
+      final data = await FB.fetchMessages(widget.gameId);
+      if (!mounted) return;
 
-    setState(() {
-      isTyping = typingData != null &&
+      if (data != null) {
+        final msgs = data.entries.map((e) {
+          final m = Map<String, dynamic>.from(e.value);
+          m['id'] = e.key;
+          return m;
+        }).toList();
+
+        msgs.sort((a, b) => (a['time'] ?? 0).compareTo(b['time'] ?? 0));
+
+        if (msgs.length > _lastMessageCount && _lastMessageCount != 0) {
+          final newMsg = msgs.last;
+          if (newMsg['sender'] != widget.myNum && !mute && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text("New message received"),
+                duration: Duration(milliseconds: 800),
+              ),
+            );
+          }
+        }
+
+        if (msgs.length != _lastMessageCount && mounted) {
+          _lastMessageCount = msgs.length;
+          setState(() {
+            messages = List<Map<String, dynamic>>.from(msgs.reversed);
+          });
+        }
+
+        for (final m in msgs) {
+          if (m['sender'] != widget.myNum && m['seen'] != true) {
+            FB.markSeen(widget.gameId, m['id']);
+          }
+        }
+        _pollIntervalMs = 1500;
+      } else {
+        _pollIntervalMs = (_pollIntervalMs * 1.5).round().clamp(1500, 10000);
+      }
+
+      final typingData = await FB.getTyping(widget.gameId);
+      if (!mounted) return;
+
+      final opponentTyping = typingData != null &&
           typingData['player'] != widget.myNum &&
           typingData['isTyping'] == true;
-    });
-  });
-}
+      if (opponentTyping != isTyping) {
+        setState(() => isTyping = opponentTyping);
+      }
+    } catch (_) {
+      _pollIntervalMs = (_pollIntervalMs * 1.5).round().clamp(1500, 10000);
+    }
+    _schedulePoll();
+  }
 
   @override
-void dispose() {
-  poll?.cancel();
-  typingTimer?.cancel();
-  _ctrl.dispose();
-  super.dispose();
-}
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _poll?.cancel();
+    _typingTimer?.cancel();
+    _ctrl.dispose();
+    super.dispose();
+  }
 
   void sendMessage(String text) async {
     if (text.trim().isEmpty) return;
@@ -115,7 +131,7 @@ void dispose() {
     _ctrl.clear();
   }
 
-  void setTyping(bool val) async {
+  void _setTyping(bool val) async {
     await FB.setTyping(widget.gameId, widget.myNum, val);
   }
 
@@ -211,11 +227,11 @@ void dispose() {
                 child: TextField(
                   controller: _ctrl,
                   onChanged: (val) {
-  setTyping(true);
+  _setTyping(true);
 
-  typingTimer?.cancel();
-  typingTimer = Timer(const Duration(seconds: 1), () {
-    setTyping(false);
+  _typingTimer?.cancel();
+  _typingTimer = Timer(const Duration(seconds: 1), () {
+    _setTyping(false);
   });
 },
                   decoration: const InputDecoration(

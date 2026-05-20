@@ -9,6 +9,8 @@ export 'backup.dart'
         ComponentChecksum,
         BackupManifest,
         BackupVersion,
+        ProviderState,
+        StorageInfo,
         RestoreStage,
         RestoreInfo,
         RestoreProgress;

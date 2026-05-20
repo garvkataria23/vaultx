@@ -7,12 +7,25 @@
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:154792131379:android:d0f5f725ff7295d73e9c46",
+        "mobilesdk_app_id": "1:154792131379:android:95e1bb7c682b94d93e9c46",
         "android_client_info": {
           "package_name": "com.garv.vaultx"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "154792131379-a2dt57agfvov2k8dv6lmd22php793ee9.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.garv.vaultx",
+            "certificate_hash": "b8a96b3923d01038c81d26bde0c93bfe021e94b8"
+          }
+        },
+        {
+          "client_id": "154792131379-vvrraetve4mnastiispbr14tee3vg5lj.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyAuAjyQscdov4kb5CcpJgqbpIo7Uqqelzw"
@@ -20,7 +33,19 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "154792131379-vvrraetve4mnastiispbr14tee3vg5lj.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "154792131379-v2m64jdmet05aph2724tdspcrdipnkjb.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.vaultx"
+              }
+            }
+          ]
         }
       }
     }

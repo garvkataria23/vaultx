@@ -178,10 +178,12 @@ class NoteEditor extends StatefulWidget {
     super.key,
     required this.note,
     required this.blobs,
+    this.allNotes = const [],
     this.onAutoSave,
   });
   final SecureNote? note;
   final EncryptedBlobService? blobs;
+  final List<SecureNote> allNotes;
   final Future<void> Function(SecureNote)? onAutoSave;
 
   @override
@@ -194,6 +196,10 @@ class _NoteEditorState extends State<NoteEditor> {
   late TextEditingController _body;
   late TextEditingController _folder;
   late TextEditingController _tags;
+
+  late SmartOrganizationService _orgService;
+  List<SecureNote> _relatedNotes = [];
+  List<SecureNote> _backlinks = [];
 
   // ✅ FIX: FocusNode + saved selection so format buttons work after tap
   final FocusNode _bodyFocus = FocusNode();
@@ -220,10 +226,15 @@ class _NoteEditorState extends State<NoteEditor> {
   List<String>? _ocrJobIds;
   final OcrQueueService _queueService = OcrQueueService();
 
+  bool _transcribing = false;
+  bool _usePcm = false;
+
   // Auto-save state
   Timer? _autoSaveTimer;
   bool _isAutoSaving = false;
+  bool _isManualSaving = false;
   DateTime? _lastSaved;
+  bool _hasUnsavedChanges = false;
   bool _isPreviewMode = false;
 
   @override
@@ -243,7 +254,10 @@ class _NoteEditorState extends State<NoteEditor> {
     _tags = TextEditingController(text: _note.tags.join(', '));
     _ocrText.text = _note.ocrText;
 
-    // ✅ FIX: Save selection whenever body changes while focused
+    _orgService = SmartOrganizationService(widget.allNotes);
+    _computeRelationships();
+
+    // Initialize change tracking
     _body.addListener(_onContentChanged);
     _title.addListener(_onContentChanged);
     _folder.addListener(_onContentChanged);
@@ -256,26 +270,64 @@ class _NoteEditorState extends State<NoteEditor> {
     }
   }
 
+  void _computeRelationships() {
+    if (_note.id.isNotEmpty) {
+      setState(() {
+        _relatedNotes = _orgService.getRelatedNotes(_note);
+        _backlinks = _orgService.getBacklinks(_note);
+      });
+    }
+  }
+
   void _onContentChanged() {
     if (_bodyFocus.hasFocus) {
       _savedSelection = _body.selection;
     }
+    
+    // Check if truly changed compared to last known state
+    final isDifferent = _title.text != _note.title ||
+                       _body.text != _note.body ||
+                       _folder.text != _note.folder ||
+                       _tags.text != _note.tags.join(', ') ||
+                       _ocrText.text != _note.ocrText;
+                       
+    if (isDifferent && !_hasUnsavedChanges) {
+      setState(() => _hasUnsavedChanges = true);
+    }
+    
     _scanSensitiveText();
     _triggerAutoSave();
   }
 
   void _triggerAutoSave() {
     _autoSaveTimer?.cancel();
-    _autoSaveTimer = Timer(const Duration(seconds: 2), _performAutoSave);
+    _autoSaveTimer = Timer(const Duration(seconds: 3), _performAutoSave);
   }
 
-  Future<void> _performAutoSave() async {
+  Future<void> _performAutoSave() => _saveNote(isManual: false);
+
+  Future<void> _manualSave() async {
+    _autoSaveTimer?.cancel();
+    await _saveNote(isManual: true);
+  }
+
+  Future<void> _saveNote({required bool isManual}) async {
     if (widget.onAutoSave == null || !mounted) return;
+    if (_isAutoSaving || _isManualSaving) return;
 
     // Don't save if everything is empty (for new notes)
     if (_title.text.trim().isEmpty && _body.text.trim().isEmpty) return;
+    
+    // Don't save if no changes
+    if (!_hasUnsavedChanges && !isManual) return;
 
-    setState(() => _isAutoSaving = true);
+    setState(() {
+      if (isManual) {
+        _isManualSaving = true;
+      } else {
+        _isAutoSaving = true;
+      }
+    });
 
     try {
       final updatedNote = _note.copyWith(
@@ -296,12 +348,18 @@ class _NoteEditorState extends State<NoteEditor> {
         setState(() {
           _note = updatedNote;
           _isAutoSaving = false;
+          _isManualSaving = false;
+          _hasUnsavedChanges = false;
           _lastSaved = DateTime.now();
         });
+        _computeRelationships();
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _isAutoSaving = false);
+        setState(() {
+          _isAutoSaving = false;
+          _isManualSaving = false;
+        });
       }
     }
   }
@@ -551,6 +609,7 @@ class _NoteEditorState extends State<NoteEditor> {
       final attachment = await _recorder?.stopAndEncrypt();
       if (!mounted) return;
       if (attachment != null) {
+        final wasPcm = _recorder?.isPcmMode ?? false;
         setState(() {
           _recording = false;
           _note = _note.copyWith(
@@ -558,14 +617,99 @@ class _NoteEditorState extends State<NoteEditor> {
             attachments: [..._note.attachments, attachment],
           );
         });
+        if (wasPcm) {
+          _transcribeAttachment(attachment);
+        }
       } else {
         setState(() => _recording = false);
       }
       return;
     }
     _recorder = VoiceNoteRecorder(widget.blobs!, _note.id);
-    final started = await _recorder!.start();
+    final started = _usePcm
+        ? await _recorder!.startPcm()
+        : await _recorder!.start();
     if (mounted) setState(() => _recording = started);
+  }
+
+  Future<void> _transcribeAttachment(SecureAttachment attachment) async {
+    if (widget.blobs == null || !TranscriptionService.isAvailable()) return;
+    setState(() => _transcribing = true);
+
+    try {
+      final tempPath = await widget.blobs!.decryptAttachmentToTemp(
+        _note.id,
+        attachment,
+      );
+      if (!mounted || tempPath.isEmpty) {
+        setState(() => _transcribing = false);
+        return;
+      }
+
+      final text = await TranscriptionService.transcribeFile(tempPath);
+      if (!mounted) return;
+
+      if (text != null && text.isNotEmpty) {
+        setState(() {
+          _note = _note.copyWith(transcript: text);
+          _transcribing = false;
+        });
+        _triggerAutoSave();
+      } else {
+        setState(() => _transcribing = false);
+        if (mounted) {
+          FloatingNotificationService.instance.show(
+            'No speech detected in recording',
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _transcribing = false);
+        FloatingNotificationService.instance.show(
+          'Transcription failed: $e',
+        );
+      }
+    }
+  }
+
+  Future<void> _createSharePackage() async {
+    if (widget.blobs == null) return;
+    if (!mounted) return;
+
+    final result = await SharePackageService.exportNote(
+      _note,
+      widget.blobs!,
+      widget.blobs!.masterKey,
+    );
+
+    if (!mounted || result == null) {
+      if (mounted) {
+        FloatingNotificationService.instance.show('Failed to create share package');
+      }
+      return;
+    }
+
+    await SharePackageService.sharePackage(
+      result.filePath,
+      shareCode: result.shareCode,
+    );
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Share code: ${result.shareCode}'),
+          duration: const Duration(seconds: 10),
+          action: SnackBarAction(
+            label: 'Copy',
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: result.shareCode));
+              FloatingNotificationService.instance.show('Share code copied');
+            },
+          ),
+        ),
+      );
+    }
   }
 
   // ✅ FIX: Lock screen shown when note is locked and not yet authenticated
@@ -622,6 +766,143 @@ class _NoteEditorState extends State<NoteEditor> {
     );
   }
 
+  /// Convert [[Note Title]] syntax to markdown links with a custom scheme.
+  String _renderWikiLinks(String text) {
+    return text.replaceAllMapped(
+      RegExp(r'\[\[(.+?)\]\]'),
+      (m) {
+        final title = m.group(1)!.trim();
+        final encoded = Uri.encodeComponent(title);
+        return '[$title](vaultx-note://$encoded)';
+      },
+    );
+  }
+
+  /// Navigate to the note with the given title (if it exists in the vault).
+  void _navigateToLinkedNote(String title) {
+    final resolver = LinkResolver();
+    resolver.rebuild(widget.allNotes);
+    final targetId = resolver.resolve(title);
+    
+    if (targetId == null) {
+      FloatingNotificationService.instance.show(
+        'Note not found: $title',
+        type: AppNotificationType.info,
+      );
+      return;
+    }
+
+    final targetNote = widget.allNotes.firstWhere((n) => n.id == targetId);
+    
+    // Open a new editor for the target note
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => NoteEditor(
+          note: targetNote,
+          blobs: widget.blobs,
+          allNotes: widget.allNotes,
+          onAutoSave: widget.onAutoSave,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRelatedNotes() {
+    if (_relatedNotes.isEmpty && _backlinks.isEmpty) return const SizedBox.shrink();
+    
+    final cs = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Divider(height: 32),
+        Row(
+          children: [
+            Icon(Icons.hub_outlined, size: 18, color: cs.primary),
+            const SizedBox(width: 8),
+            Text(
+              'Related Notes & References',
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                color: cs.primary,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        if (_backlinks.isNotEmpty) ...[
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text('Linked by:', style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
+          ),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: _backlinks.map((n) => ActionChip(
+              avatar: const Icon(Icons.link, size: 14),
+              label: Text(n.title.isEmpty ? 'Untitled' : n.title, style: const TextStyle(fontSize: 12)),
+              onPressed: () => _navigateToLinkedNote(n.title),
+              visualDensity: VisualDensity.compact,
+            )).toList(),
+          ),
+          const SizedBox(height: 16),
+        ],
+        if (_relatedNotes.isNotEmpty) ...[
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text('Suggested relations:', style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
+          ),
+          SizedBox(
+            height: 100,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: _relatedNotes.length,
+              itemBuilder: (ctx, i) {
+                final n = _relatedNotes[i];
+                return Container(
+                  width: 160,
+                  margin: const EdgeInsets.only(right: 12),
+                  child: Card(
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.5)),
+                    ),
+                    child: InkWell(
+                      onTap: () => _navigateToLinkedNote(n.title),
+                      borderRadius: BorderRadius.circular(12),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              n.title.isEmpty ? 'Untitled' : n.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              n.body,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // ✅ Show lock screen until authenticated
@@ -643,11 +924,20 @@ class _NoteEditorState extends State<NoteEditor> {
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text('Secure note'),
-            if (_isAutoSaving)
+            if (_isManualSaving || _isAutoSaving)
               Text(
                 'Saving...',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: Theme.of(context).colorScheme.primary,
+                  fontSize: 10,
+                  height: 1,
+                ),
+              )
+            else if (_hasUnsavedChanges)
+              Text(
+                'Unsaved changes',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.error,
                   fontSize: 10,
                   height: 1,
                 ),
@@ -664,6 +954,20 @@ class _NoteEditorState extends State<NoteEditor> {
           ],
         ),
         actions: [
+          IconButton(
+            onPressed: (_isManualSaving || _isAutoSaving) ? null : _manualSave,
+            icon: _isManualSaving
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.check),
+            tooltip: 'Save note',
+            color: _hasUnsavedChanges
+                ? Theme.of(context).colorScheme.primary
+                : null,
+          ),
           IconButton(
             onPressed: () => setState(() => _isPreviewMode = !_isPreviewMode),
             icon: Icon(_isPreviewMode ? Icons.edit : Icons.preview),
@@ -684,6 +988,11 @@ class _NoteEditorState extends State<NoteEditor> {
               () => _note = _note.copyWith(favorite: !_note.favorite),
             ),
             icon: Icon(_note.favorite ? Icons.star : Icons.star_outline),
+          ),
+          IconButton(
+            onPressed: _createSharePackage,
+            icon: const Icon(Icons.share),
+            tooltip: 'Create encrypted share package',
           ),
           if (_note.versions.isNotEmpty)
             IconButton(
@@ -822,15 +1131,10 @@ class _NoteEditorState extends State<NoteEditor> {
                 onSelected: (v) =>
                     setState(() => _note = _note.copyWith(oneTimeView: v)),
               ),
-              FilterChip(
-                label: const Text('Self-destruct 24h'),
-                selected: _note.expiresAt != null,
-                onSelected: (v) => setState(
-                  () => _note = _note.copyWith(
-                    expiresAt: v
-                        ? DateTime.now().add(const Duration(hours: 24))
-                        : null,
-                  ),
+              _ExpiryChip(
+                expiresAt: _note.expiresAt,
+                onChange: (v) => setState(
+                  () => _note = _note.copyWith(expiresAt: v),
                 ),
               ),
               FilterChip(
@@ -871,10 +1175,17 @@ class _NoteEditorState extends State<NoteEditor> {
                 border: Border.all(color: Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.5)),
               ),
               child: MarkdownBody(
-                data: _body.text.isEmpty ? '*Empty note*' : _body.text,
+                data: _renderWikiLinks(_body.text),
                 selectable: true,
                 onTapLink: (text, href, title) {
-                  if (href != null) launchUrl(Uri.parse(href));
+                  if (href == null) return;
+                  if (href.startsWith('vaultx-note://')) {
+                    final titleEncoded = href.substring('vaultx-note://'.length);
+                    final noteTitle = Uri.decodeComponent(titleEncoded);
+                    _navigateToLinkedNote(noteTitle);
+                  } else {
+                    launchUrl(Uri.parse(href));
+                  }
                 },
                 styleSheet: MarkdownStyleSheet(
                   p: Theme.of(context).textTheme.bodyMedium,
@@ -902,6 +1213,65 @@ class _NoteEditorState extends State<NoteEditor> {
                 },
               ),
             ),
+          
+          _buildRelatedNotes(),
+
+          if (_note.body.length >= 120) ...[
+            const SizedBox(height: 12),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.auto_awesome, size: 16),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Smart Summary',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        const Spacer(),
+                        if (_note.summary.isNotEmpty)
+                          TextButton.icon(
+                            onPressed: () => setState(
+                              () => _note = _note.copyWith(summary: ''),
+                            ),
+                            icon: const Icon(Icons.refresh, size: 16),
+                            label: const Text('Regenerate'),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    if (_note.summary.isNotEmpty)
+                      SelectableText(
+                        _note.summary,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          fontStyle: FontStyle.italic,
+                        ),
+                      )
+                    else
+                      OutlinedButton.icon(
+                        onPressed: () {
+                          final s = SummarizationService.summarize(
+                            _body.text,
+                          );
+                          if (s.isNotEmpty) {
+                            setState(() {
+                              _note = _note.copyWith(summary: s);
+                            });
+                            _triggerAutoSave();
+                          }
+                        },
+                        icon: const Icon(Icons.auto_awesome, size: 16),
+                        label: const Text('Generate summary'),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           Row(
             children: [
@@ -922,6 +1292,15 @@ class _NoteEditorState extends State<NoteEditor> {
               ),
             ],
           ),
+          if (TranscriptionService.isAvailable())
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: FilterChip(
+                label: const Text('Transcribe after recording'),
+                selected: _usePcm,
+                onSelected: (v) => setState(() => _usePcm = v),
+              ),
+            ),
           if (_note.attachments.isNotEmpty) ...[
             const SizedBox(height: 12),
             Text(
@@ -1031,6 +1410,74 @@ class _NoteEditorState extends State<NoteEditor> {
                 ),
               ),
             ),
+          ],
+          if (_note.attachments.any((a) => a.kind == 'voice')) ...[
+            const SizedBox(height: 16),
+            Text(
+              'Voice transcription',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            if (_transcribing)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    SizedBox(width: 12),
+                    Text('Transcribing audio…'),
+                  ],
+                ),
+              ),
+            if (_note.transcript.isNotEmpty && !_transcribing) ...[
+              TextField(
+                readOnly: true,
+                minLines: 3,
+                maxLines: 8,
+                decoration: const InputDecoration(
+                  labelText: 'Transcribed text',
+                  helperText: 'Speech-to-text result — searchable',
+                  border: OutlineInputBorder(),
+                ),
+                controller: TextEditingController(text: _note.transcript),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          _body.text = _body.text.isEmpty
+                              ? _note.transcript
+                              : '${_body.text}\n\n--- Transcribed text ---\n${_note.transcript}';
+                        });
+                      },
+                      icon: const Icon(Icons.copy, size: 16),
+                      label: const Text('Copy to note body'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            if (_note.transcript.isEmpty && !_transcribing &&
+                TranscriptionService.isAvailable())
+              OutlinedButton.icon(
+                onPressed: () {
+                  final voiceAttachments = _note.attachments
+                      .where((a) => a.kind == 'voice')
+                      .toList();
+                  if (voiceAttachments.isNotEmpty) {
+                    _transcribeAttachment(voiceAttachments.first);
+                  }
+                },
+                icon: const Icon(Icons.transcribe),
+                label: const Text('Transcribe voice notes'),
+              ),
           ],
           if (_hasImageAttachments || _ocrText.text.isNotEmpty) ...[
             const SizedBox(height: 16),
@@ -1284,3 +1731,92 @@ class _VersionHistorySheet extends StatelessWidget {
     );
   }
 }
+
+/// Self-destruct expiry chip with preset durations and custom date picker.
+class _ExpiryChip extends StatelessWidget {
+  const _ExpiryChip({required this.expiresAt, required this.onChange});
+  final DateTime? expiresAt;
+  final ValueChanged<DateTime?> onChange;
+
+  static final _presets = <Duration, String>{
+    const Duration(hours: 1): '1h',
+    const Duration(hours: 6): '6h',
+    const Duration(hours: 24): '24h',
+    const Duration(days: 2): '2d',
+    const Duration(days: 7): '7d',
+    const Duration(days: 30): '30d',
+  };
+
+  String? _remainingLabel(DateTime expiry) {
+    final remaining = expiry.difference(DateTime.now());
+    if (remaining.isNegative) return 'Expired';
+    if (remaining.inDays > 0) return '${remaining.inDays}d ${remaining.inHours % 24}h';
+    if (remaining.inHours > 0) return '${remaining.inHours}h ${remaining.inMinutes % 60}m';
+    return '${remaining.inMinutes}m';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    if (expiresAt != null) {
+      return ActionChip(
+        avatar: Icon(Icons.timer, size: 16, color: cs.error),
+        label: Text(_remainingLabel(expiresAt!) ?? ''),
+        onPressed: () => onChange(null),
+      );
+    }
+
+    return PopupMenuButton<Duration>(
+      onSelected: (d) {
+        if (d == const Duration()) {
+          _pickCustom(context);
+        } else {
+          onChange(DateTime.now().add(d));
+        }
+      },
+      itemBuilder: (_) => [
+        ..._presets.entries.map(
+          (e) => PopupMenuItem(
+            value: e.key,
+            child: Text('Self-destruct ${e.value}'),
+          ),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem(
+          value: Duration(),
+          child: ListTile(
+            leading: Icon(Icons.calendar_today),
+            title: Text('Custom date/time'),
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+          ),
+        ),
+      ],
+      child: Chip(
+        avatar: Icon(Icons.timer_outlined, size: 16, color: cs.onSurfaceVariant),
+        label: const Text('Self-destruct'),
+      ),
+    );
+  }
+
+  Future<void> _pickCustom(BuildContext context) async {
+    final now = DateTime.now();
+    final date = await showDatePicker(
+      context: context,
+      initialDate: now.add(const Duration(hours: 1)),
+      firstDate: now,
+      lastDate: now.add(const Duration(days: 365)),
+    );
+    if (date == null || !context.mounted) return;
+
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(now.add(const Duration(hours: 1))),
+    );
+    if (time == null || !context.mounted) return;
+
+    onChange(DateTime(date.year, date.month, date.day, time.hour, time.minute));
+  }
+}
+

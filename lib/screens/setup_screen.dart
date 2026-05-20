@@ -48,15 +48,19 @@ class _SetupScreenState extends State<SetupScreen> {
   // ── Setup ────────────────────────────────────────────────────────────────────
 
   Future<void> _setup() async {
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    if (_password.text.length < 12 || _password.text != _confirm.text) {
+    if (mounted) {
       setState(() {
-        _busy = false;
-        _error = 'Use a matching password with at least 12 characters.';
+        _busy = true;
+        _error = null;
       });
+    }
+    if (_password.text.length < 12 || _password.text != _confirm.text) {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _error = 'Use a matching password with at least 12 characters.';
+        });
+      }
       return;
     }
     await widget.auth.setup(password: _password.text);
@@ -75,10 +79,12 @@ class _SetupScreenState extends State<SetupScreen> {
   /// salts into secure storage. After this call isInitialized() returns true,
   /// so unlockWithPassword() in step 2 can correctly derive Phone 1's masterKey.
   Future<void> _signInAndDownload() async {
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
+    if (mounted) {
+      setState(() {
+        _busy = true;
+        _error = null;
+      });
+    }
     try {
       _driveService = GoogleDriveBackupService(authService: widget.auth);
 
@@ -109,7 +115,6 @@ class _SetupScreenState extends State<SetupScreen> {
       debugPrint('SETUP RESTORE: mainVault records=${(backup["mainVault"] as List?)?.length ?? 0}');
       debugPrint('SETUP RESTORE: hiddenVault records=${(backup["hiddenVault"] as List?)?.length ?? 0}');
 
-      if (!mounted) return;
       setState(() {
         _busy = false;
         _backupDownloaded = true;
@@ -130,24 +135,29 @@ class _SetupScreenState extends State<SetupScreen> {
   /// masterKey from the imported auth bundle) and restores all records.
   Future<void> _restoreWithPassword() async {
     if (_restorePassword.text.isEmpty) {
-      setState(
-        () => _error = 'Enter your vault password to decrypt the backup.',
-      );
+      if (mounted) {
+        setState(
+          () => _error = 'Enter your vault password to decrypt the backup.',
+        );
+      }
       return;
     }
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
+    if (mounted) {
+      setState(() {
+        _busy = true;
+        _error = null;
+      });
+    }
     try {
       debugPrint('SETUP RESTORE: unlocking with password...');
       final result = await widget.auth.unlockWithPassword(
         _restorePassword.text,
       );
+      if (!mounted) return;
       debugPrint('SETUP RESTORE: unlock result ok=${result.ok}, kind=${result.kind}, hasKey=${result.masterKey != null}');
       final verified = await widget.auth.verify(result);
-      debugPrint('SETUP RESTORE: verify result ok=${verified.ok}, kind=${verified.kind}, hasKey=${verified.masterKey != null}');
       if (!mounted) return;
+      debugPrint('SETUP RESTORE: verify result ok=${verified.ok}, kind=${verified.kind}, hasKey=${verified.masterKey != null}');
 
       if (!verified.ok || verified.masterKey == null) {
         debugPrint('SETUP RESTORE FAILED: wrong password or masterKey is null');
@@ -171,9 +181,8 @@ class _SetupScreenState extends State<SetupScreen> {
         mode: RestoreMode.replace,
         mainMasterKey: verified.masterKey!,
       );
-      debugPrint('SETUP RESTORE: restoreBackup returned success=${restoreResult.success}, error=${restoreResult.error}');
-
       if (!mounted) return;
+      debugPrint('SETUP RESTORE: restoreBackup returned success=${restoreResult.success}, error=${restoreResult.error}');
 
       if (restoreResult.success) {
         FloatingNotificationService.instance.show('Vault restored successfully.');
