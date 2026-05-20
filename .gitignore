@@ -44,3 +44,4 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 android/app/src/main/jniLibs/arm64-v8a/libmega.so
+android/app/src/main/jniLibs/arm64-v8a/libmega.so
