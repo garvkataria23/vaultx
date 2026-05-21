@@ -481,22 +481,34 @@ class MegaManager private constructor(private val appContext: Context) : Applica
                 result.success(mapOf<String, Any>("success" to false, "error" to "Root node not available"))
                 return
             }
+            Log.i(TAG, "ROOT NODE READY")
 
-            var backupFolder = client.megaApi.getChildNode(root, BACKUP_FOLDER)
+            val backupFolder = client.megaApi.getChildNode(root, BACKUP_FOLDER)
             if (backupFolder == null) {
-                Log.w(TAG, "BACKUP FOLDER NOT FOUND - ATTEMPTING REFRESH")
+                Log.w(TAG, "BACKUP FOLDER MISSING")
                 client.onLoginResult = { success, _ ->
                     client.onLoginResult = null
                     if (success) {
                         val newRoot = client.megaApi.rootNode
                         val newBackupFolder = if (newRoot != null) client.megaApi.getChildNode(newRoot, BACKUP_FOLDER) else null
                         if (newBackupFolder != null) {
-                            Log.i(TAG, "BACKUP FOLDER FOUND AFTER REFRESH - STARTING UPLOAD")
+                            Log.i(TAG, "BACKUP FOLDER FOUND")
+                            Log.i(TAG, "STARTING UPLOAD")
                             client.uploadFile(localPath, newBackupFolder)
                         } else {
-                            Log.e(TAG, "BACKUP FOLDER STILL MISSING AFTER REFRESH")
-                            tempFile.delete()
-                            result.success(mapOf<String, Any>("success" to false, "error" to "Backup folder not found after refresh"))
+                            Log.w(TAG, "AUTO CREATING BACKUP FOLDER")
+                            client.onCreateFolderResult = { createSuccess, createError, folderNode ->
+                                client.onCreateFolderResult = null
+                                if (createSuccess && folderNode != null) {
+                                    Log.i(TAG, "BACKUP FOLDER CREATED")
+                                    Log.i(TAG, "STARTING UPLOAD")
+                                    client.uploadFile(localPath, folderNode)
+                                } else {
+                                    tempFile.delete()
+                                    result.success(mapOf<String, Any>("success" to false, "error" to "Failed to create backup folder: ${createError ?: "unknown"}"))
+                                }
+                            }
+                            client.createFolder(BACKUP_FOLDER, newRoot ?: root)
                         }
                     } else {
                         Log.e(TAG, "REFRESH NODES FAILED DURING UPLOAD")
@@ -506,7 +518,8 @@ class MegaManager private constructor(private val appContext: Context) : Applica
                 }
                 client.fetchNodes()
             } else {
-                Log.i(TAG, "BACKUP FOLDER READY - STARTING UPLOAD: $fileName")
+                Log.i(TAG, "BACKUP FOLDER FOUND")
+                Log.i(TAG, "STARTING UPLOAD")
                 client.uploadFile(localPath, backupFolder)
             }
         } catch (e: Exception) {
