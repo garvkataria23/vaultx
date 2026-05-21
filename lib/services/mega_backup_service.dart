@@ -521,6 +521,12 @@ class MEGABackupService extends BaseCloudBackupProvider {
 
       for (final node in nodes) {
         final name = node['name'] as String? ?? '';
+        
+        // Filter for valid VaultX backup extensions
+        if (!name.endsWith('.vxbin') && !name.endsWith('.vxbackup') && !name.endsWith('_m.dat')) {
+          continue;
+        }
+
         final handle = node['handle'] as String? ?? '';
         final size = node['size'] as int? ?? 0;
         final ts = node['modificationTime'] as int? ?? 0;
@@ -596,19 +602,57 @@ class MEGABackupService extends BaseCloudBackupProvider {
 
   @override
   Future<int> pruneBackups({int keepCount = 3}) async {
+    debugPrint('BACKUP CLEANUP START (MEGA)');
     final versions = await listBackups();
-    if (versions.length <= keepCount) return 0;
+    debugPrint('FOUND ${versions.length} BACKUPS');
+
+    if (versions.length <= keepCount) {
+      debugPrint('FINAL BACKUP COUNT: ${versions.length}');
+      return 0;
+    }
 
     var deleted = 0;
     for (var i = keepCount; i < versions.length; i++) {
       try {
-        await _sdk.deleteNode(versions[i].driveFileId);
-        deleted++;
+        final version = versions[i];
+        debugPrint('DELETE OLD BACKUP: ${version.fileName}');
+
+        // If it's a manifest, delete associated parts first
+        if (version.fileName.endsWith('_m.dat')) {
+          final cloudBaseName = version.fileName.replaceAll('_m.dat', '');
+          await _deleteParts(cloudBaseName);
+        }
+
+        final result = await _sdk.deleteNode(version.driveFileId);
+        if (result['success'] == true) {
+          debugPrint('DELETE SUCCESS: ${version.fileName}');
+          deleted++;
+        } else {
+          debugPrint('DELETE FAILED: ${version.fileName} - ${result['error']}');
+        }
       } catch (e) {
-        debugPrint('MEGA SDK PRUNE: ${versions[i].driveFileId}: $e');
+        debugPrint('MEGA SDK PRUNE ERROR: ${versions[i].driveFileId}: $e');
       }
     }
+    
+    final finalCount = versions.length - deleted;
+    debugPrint('FINAL BACKUP COUNT: $finalCount');
     return deleted;
+  }
+
+  Future<void> _deleteParts(String cloudBaseName) async {
+    final nodes = await _listBackupNodes();
+    final partPrefix = '${cloudBaseName}_p';
+    for (final node in nodes) {
+      final name = node['name'] as String? ?? '';
+      if (name.startsWith(partPrefix)) {
+        try {
+          await _sdk.deleteNode(node['handle'] as String);
+        } catch (e) {
+          debugPrint('MEGA SDK DELETE PART ERROR: $name: $e');
+        }
+      }
+    }
   }
 
   @override

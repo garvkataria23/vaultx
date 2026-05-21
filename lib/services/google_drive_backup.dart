@@ -697,26 +697,39 @@ class GoogleDriveBackupService extends BaseCloudBackupProvider {
 
   @override
   Future<int> pruneBackups({int keepCount = 3}) async {
+    debugPrint('BACKUP CLEANUP START (GOOGLE DRIVE)');
     final versions = await listBackups();
-    if (versions.length <= keepCount) return 0;
+    debugPrint('FOUND ${versions.length} BACKUPS');
+
+    if (versions.length <= keepCount) {
+      debugPrint('FINAL BACKUP COUNT: ${versions.length}');
+      return 0;
+    }
 
     var deleted = 0;
     for (var i = keepCount; i < versions.length; i++) {
       try {
         final version = versions[i];
+        debugPrint('DELETE OLD BACKUP: ${version.fileName}');
         
         // Before deleting the manifest, we MUST check if it has obfuscated parts
-        if (version.fileName.endsWith('_manifest.json')) {
-           final baseName = version.fileName.replaceAll('_manifest.json', '');
+        if (version.fileName.endsWith('_manifest.json') || version.fileName.endsWith('_m.dat')) {
+           final baseName = version.fileName
+               .replaceAll('_manifest.json', '')
+               .replaceAll('_m.dat', '');
            await _deleteParts(baseName, version.driveFileId);
         }
         
         await _driveApi!.files.delete(version.driveFileId);
+        debugPrint('DELETE SUCCESS: ${version.fileName}');
         deleted++;
       } catch (e) {
-        debugPrint('PRUNE: failed to delete ${versions[i].driveFileId}: $e');
+        debugPrint('PRUNE ERROR: failed to delete ${versions[i].driveFileId}: $e');
       }
     }
+
+    final finalCount = versions.length - deleted;
+    debugPrint('FINAL BACKUP COUNT: $finalCount');
     return deleted;
   }
   

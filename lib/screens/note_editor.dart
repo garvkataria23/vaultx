@@ -309,6 +309,9 @@ class _NoteEditorState extends State<NoteEditor> {
   Future<void> _manualSave() async {
     _autoSaveTimer?.cancel();
     await _saveNote(isManual: true);
+    if (mounted) {
+      Navigator.of(context).pop();
+    }
   }
 
   Future<void> _saveNote({required bool isManual}) async {

@@ -28,13 +28,15 @@ class LoginScreen extends StatefulWidget {
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState extends State<LoginScreen> {
+class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
   final _secret = TextEditingController();
   bool _secretVisible = false;
 
   _VaultMode _mode = _VaultMode.main;
 
   bool _biometricAvailable = false;
+  String _biometricLabel = 'Biometrics';
+  IconData _biometricIcon = Icons.fingerprint;
   bool _biometricBusy = false;
   bool _passwordBusy = false;
   String? _error;
@@ -43,21 +45,55 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   void initState() {
     super.initState();
-    _checkBiometric();
+    WidgetsBinding.instance.addObserver(this);
+    _checkBiometric(autoPrompt: true);
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _errorTimer?.cancel();
     _secret.clear();
     _secret.dispose();
     super.dispose();
   }
 
-  Future<void> _checkBiometric() async {
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkBiometric(autoPrompt: true);
+    }
+  }
+
+  Future<void> _checkBiometric({bool autoPrompt = false}) async {
     final available = await widget.auth.isBiometricUnlockAvailable();
     if (!mounted) return;
-    setState(() => _biometricAvailable = available);
+
+    if (available) {
+      final label = await widget.auth.biometricTypeLabel();
+      final icon = await widget.auth.biometricTypeIcon();
+      if (mounted) {
+        setState(() {
+          _biometricAvailable = true;
+          _biometricLabel = label;
+          _biometricIcon = icon;
+        });
+      }
+    } else {
+      setState(() => _biometricAvailable = false);
+    }
+
+    if (autoPrompt && _biometricAvailable && !_biometricBusy && _mode == _VaultMode.main) {
+      final appState = context.read<VaultAppState>();
+      if (!appState.isBiometricEscalated) {
+        // Delay slightly to ensure UI is ready and not jarring
+        Future.delayed(const Duration(milliseconds: 300), () {
+          if (mounted && _biometricAvailable && !_biometricBusy) {
+            _unlockWithBiometric();
+          }
+        });
+      }
+    }
   }
 
   Future<void> _unlockWithBiometric() async {
@@ -404,6 +440,8 @@ class _LoginScreenState extends State<LoginScreen> {
                       _BiometricCard(
                         busy: _biometricBusy,
                         onTap: _unlockWithBiometric,
+                        icon: _biometricIcon,
+                        label: _biometricLabel,
                       ),
                       const SizedBox(height: 20),
                     ],
@@ -505,9 +543,16 @@ class _LoginScreenState extends State<LoginScreen> {
 enum _VaultMode { main, hidden }
 
 class _BiometricCard extends StatelessWidget {
-  const _BiometricCard({required this.busy, required this.onTap});
+  const _BiometricCard({
+    required this.busy,
+    required this.onTap,
+    required this.icon,
+    required this.label,
+  });
   final bool busy;
   final VoidCallback onTap;
+  final IconData icon;
+  final String label;
 
   @override
   Widget build(BuildContext context) {
@@ -554,7 +599,7 @@ class _BiometricCard extends StatelessWidget {
                           shape: BoxShape.circle,
                         ),
                         child: Icon(
-                          Icons.fingerprint,
+                          icon,
                           size: 36,
                           color: cs.primary,
                         ),
@@ -562,7 +607,7 @@ class _BiometricCard extends StatelessWidget {
               ),
               const SizedBox(height: 16),
               Text(
-                busy ? 'Authenticating\u2026' : 'Login with Biometrics',
+                busy ? 'Authenticating\u2026' : 'Login with $label',
                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
                   fontWeight: FontWeight.w700,
                   color: busy ? cs.primary : cs.onSurface,

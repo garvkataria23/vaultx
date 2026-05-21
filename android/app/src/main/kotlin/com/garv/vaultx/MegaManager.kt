@@ -30,6 +30,7 @@ class MegaManager private constructor(private val appContext: Context) : Applica
         private const val PREFS_NAME = "mega_secure_prefs"
         private const val KEY_SESSION = "mega_session"
         private const val KEY_EMAIL = "mega_email"
+        private const val KEY_BACKUP_HANDLE = "mega_backup_handle"
         private const val APP_KEY = "VaultX"
         private const val USER_AGENT = "VaultX/1.0"
 
@@ -363,48 +364,154 @@ class MegaManager private constructor(private val appContext: Context) : Applica
                 return
             }
 
-            val root = client.megaApi.rootNode
-            if (root == null) {
-                result.success(mapOf<String, Any>("success" to true, "files" to emptyList<Map<String, Any>>()))
-                return
+            // Always fetch nodes before listing to ensure we see the latest uploads
+            client.onLoginResult = { success, _ ->
+                client.onLoginResult = null
+                if (success) {
+                    enumerateWithRetry(result, 0)
+                } else {
+                    Log.e(TAG, "fetchNodes failed during listBackupFiles")
+                    result.success(mapOf<String, Any>("success" to false, "error" to "Failed to refresh nodes", "files" to emptyList<Map<String, Any>>()))
+                }
             }
-
-            val backupFolder = client.megaApi.getChildNode(root, BACKUP_FOLDER)
-            if (backupFolder == null) {
-                result.success(mapOf<String, Any>("success" to true, "files" to emptyList<Map<String, Any>>()))
-                return
-            }
-
-            val children = client.megaApi.getChildren(backupFolder)
-            val files = mutableListOf<Map<String, Any>>()
-            for (i in 0 until children.size()) {
-                val child = children.get(i)
-                files.add(mapOf(
-                    "name" to child.name,
-                    "handle" to child.base64Handle,
-                    "size" to client.megaApi.getSize(child),
-                    "modificationTime" to (child.modificationTime / 1000)
-                ))
-            }
-            result.success(mapOf<String, Any>("success" to true, "files" to files))
+            Log.i(TAG, "FETCHING NODES for listBackupFiles...")
+            client.fetchNodes()
         } catch (e: Exception) {
             Log.e(TAG, "listBackupFiles error: ${e.message}")
             result.success(mapOf<String, Any>("success" to false, "error" to (e.message ?: "Unknown error"), "files" to emptyList<Map<String, Any>>()))
         }
     }
 
+    private fun enumerateWithRetry(result: MethodChannel.Result, attempt: Int) {
+        val oldFolder = cachedBackupFolder
+        val oldHash = if (oldFolder != null) System.identityHashCode(oldFolder) else 0
+        val oldCount = if (oldFolder != null) client.megaApi.getNumChildren(oldFolder) else -1
+
+        // Force fresh resolution from SDK by bypassing cache
+        cachedBackupFolder = null
+        val backupFolder = resolveBackupFolder()
+        val freshHash = if (backupFolder != null) System.identityHashCode(backupFolder) else 0
+        
+        if (backupFolder == null) {
+            Log.w(TAG, "BACKUP_FOLDER NOT FOUND (attempt $attempt)")
+            if (attempt < 3) {
+                Log.i(TAG, "RETRYING FOLDER RESOLUTION IN 2 SECONDS...")
+                Handler(Looper.getMainLooper()).postDelayed({
+                    enumerateWithRetry(result, attempt + 1)
+                }, 2000L)
+            } else {
+                result.success(mapOf<String, Any>("success" to true, "files" to emptyList<Map<String, Any>>()))
+            }
+            return
+        }
+
+        val numChildren = client.megaApi.getNumChildren(backupFolder)
+        val children = client.megaApi.getChildren(backupFolder)
+        val childCount = children.size()
+        
+        Log.i(TAG, "ENUMERATION ATTEMPT $attempt:")
+        Log.i(TAG, "CACHED NODE: hash=$oldHash children=$oldCount")
+        Log.i(TAG, "FRESH NODE: hash=$freshHash children=$numChildren parent=${backupFolder.parentHandle} type=${backupFolder.type}")
+        Log.i(TAG, "GET_CHILDREN: size=$childCount")
+        Log.i(TAG, "FOLDER MODIFIED: ${backupFolder.modificationTime / 1000}")
+
+        // Check if root children changed too
+        val root = client.megaApi.rootNode
+        if (root != null) {
+            Log.i(TAG, "ROOT CHILD COUNT: ${client.megaApi.getNumChildren(root)}")
+        }
+
+        if (childCount == 0 && attempt < 3) {
+            Log.i(TAG, "CHILDREN NOT FOUND IN CACHE, RETRYING ENUMERATION IN 2 SECONDS...")
+            Handler(Looper.getMainLooper()).postDelayed({
+                enumerateWithRetry(result, attempt + 1)
+            }, 2000L)
+            return
+        }
+
+        val files = mutableListOf<Map<String, Any>>()
+        for (i in 0 until childCount) {
+            val child = children.get(i)
+            val name = child.name ?: "unnamed"
+            val type = when(child.type) {
+                MegaNode.TYPE_FILE -> "FILE"
+                MegaNode.TYPE_FOLDER -> "FOLDER"
+                else -> "OTHER(${child.type})"
+            }
+            Log.i(TAG, "CHILD ENUMERATED: name=\"$name\" type=$type handle=${child.base64Handle} size=${client.megaApi.getSize(child)}")
+            
+            files.add(mapOf(
+                "name" to name,
+                "handle" to child.base64Handle,
+                "size" to client.megaApi.getSize(child),
+                "modificationTime" to (child.modificationTime / 1000)
+            ))
+        }
+        
+        Log.i(TAG, "FINAL DETECTED BACKUP FILES COUNT: ${files.size}")
+        result.success(mapOf<String, Any>("success" to true, "files" to files))
+    }
+
+    private fun resolveBackupFolder(): MegaNode? {
+        // 1. Check in-memory cache
+        cachedBackupFolder?.let {
+            try {
+                if (it.base64Handle.isNotBlank()) {
+                    Log.i(TAG, "BACKUP FOLDER FOUND (in-memory cache) handle=${it.base64Handle}")
+                    return it
+                }
+            } catch (_: Exception) {
+                cachedBackupFolder = null
+            }
+        }
+
+        // 2. Check persistent storage
+        val storedHandle = securePrefs.getString(KEY_BACKUP_HANDLE, null)
+        if (!storedHandle.isNullOrBlank()) {
+            try {
+                val handle = MegaApi.base64ToHandle(storedHandle)
+                val node = client.megaApi.getNodeByHandle(handle)
+                if (node != null && node.name == BACKUP_FOLDER) {
+                    cachedBackupFolder = node
+                    Log.i(TAG, "BACKUP FOLDER FOUND (persisted handle) handle=$storedHandle")
+                    return node
+                }
+                Log.w(TAG, "Persisted handle invalid or node missing: $storedHandle")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error resolving stored handle: ${e.message}")
+            }
+        }
+
+        // 3. Search in root
+        val root = client.megaApi.rootNode
+        if (root != null) {
+            val found = findChildByName(root, BACKUP_FOLDER)
+            if (found != null) {
+                val handle = found.base64Handle
+                securePrefs.edit().putString(KEY_BACKUP_HANDLE, handle).apply()
+                cachedBackupFolder = found
+                Log.i(TAG, "BACKUP FOLDER FOUND (root search) handle=$handle")
+                return found
+            }
+        }
+
+        Log.w(TAG, "BACKUP FOLDER NOT RESOLVED")
+        return null
+    }
+
     private fun findChildByName(parent: MegaNode, targetName: String): MegaNode? {
         val targetClean = targetName.trim().lowercase()
         val children = client.megaApi.getChildren(parent)
-        Log.i(TAG, "ROOT CHILD COUNT: ${children.size()}")
+        val parentName = parent.name ?: "ROOT"
+        Log.i(TAG, "LOOKING IN \"$parentName\" - CHILD COUNT: ${children.size()}")
+        
         for (i in 0 until children.size()) {
             val child = children.get(i)
-            val childName = child.name ?: ""
-            val parentNode = client.megaApi.getParentNode(child)
-            val parentHandle = parentNode?.base64Handle ?: "unknown"
-            Log.i(TAG, "CHILD NAME FOUND: \"$childName\" (parent=$parentHandle)")
+            val childName = child.name ?: "unnamed"
+            Log.i(TAG, "CHILD FOUND: name=\"$childName\" handle=${child.base64Handle}")
+            
             if (childName.trim().lowercase() == targetClean) {
-                Log.i(TAG, "MATCHED BACKUP FOLDER: \"$childName\" handle=${child.base64Handle}")
+                Log.i(TAG, "MATCHED TARGET: \"$childName\" handle=${child.base64Handle}")
                 return child
             }
         }
@@ -421,44 +528,18 @@ class MegaManager private constructor(private val appContext: Context) : Applica
                 return
             }
 
-            if (cachedBackupFolder != null) {
-                try {
-                    val handle = cachedBackupFolder!!.base64Handle
-                    if (handle.isNotBlank()) {
-                        Log.i(TAG, "BACKUP FOLDER FOUND (cached)")
-                        result.success(mapOf<String, Any>("success" to true, "handle" to handle, "created" to false))
-                        return
-                    }
-                } catch (_: Exception) {
-                    cachedBackupFolder = null
-                }
-            }
-
-            val root = client.megaApi.rootNode
-            if (root == null) {
-                result.success(mapOf<String, Any>("success" to false, "error" to "Root node not available"))
-                return
-            }
-            Log.i(TAG, "ROOT NODE READY")
-
-            val existing = findChildByName(root, BACKUP_FOLDER)
-
+            val existing = resolveBackupFolder()
             if (existing != null) {
-                cachedBackupFolder = existing
-                Log.i(TAG, "BACKUP FOLDER FOUND")
                 result.success(mapOf<String, Any>("success" to true, "handle" to existing.base64Handle, "created" to false))
                 return
             }
 
-            Log.w(TAG, "BACKUP FOLDER MISSING")
+            Log.w(TAG, "BACKUP FOLDER MISSING - REFRESHING NODES...")
             client.onLoginResult = { success, _ ->
                 client.onLoginResult = null
                 if (success) {
-                    val refreshedRoot = client.megaApi.rootNode
-                    val refreshed = if (refreshedRoot != null) findChildByName(refreshedRoot, BACKUP_FOLDER) else null
+                    val refreshed = resolveBackupFolder()
                     if (refreshed != null) {
-                        cachedBackupFolder = refreshed
-                        Log.i(TAG, "BACKUP FOLDER FOUND")
                         result.success(mapOf<String, Any>("success" to true, "handle" to refreshed.base64Handle, "created" to false))
                     } else {
                         Log.w(TAG, "AUTO CREATING BACKUP FOLDER")
@@ -466,8 +547,8 @@ class MegaManager private constructor(private val appContext: Context) : Applica
                             client.onCreateFolderResult = null
                             if (createSuccess && node != null) {
                                 cachedBackupFolder = node
-                                val parentNode = client.megaApi.getParentNode(node)
-                                Log.i(TAG, "BACKUP FOLDER CREATED handle=${node.base64Handle} parent=${parentNode?.base64Handle ?: "unknown"}")
+                                securePrefs.edit().putString(KEY_BACKUP_HANDLE, node.base64Handle).apply()
+                                Log.i(TAG, "BACKUP FOLDER CREATED handle=${node.base64Handle}")
                             }
                             result.success(mapOf<String, Any>(
                                 "success" to createSuccess,
@@ -476,7 +557,12 @@ class MegaManager private constructor(private val appContext: Context) : Applica
                                 "created" to true
                             ))
                         }
-                        client.createFolder(BACKUP_FOLDER, refreshedRoot ?: root)
+                        val root = client.megaApi.rootNode
+                        if (root != null) {
+                            client.createFolder(BACKUP_FOLDER, root)
+                        } else {
+                            result.success(mapOf<String, Any>("success" to false, "error" to "Root node null after fetchNodes"))
+                        }
                     }
                 } else {
                     result.success(mapOf<String, Any>("success" to false, "error" to "Failed to refresh nodes", "created" to false))
@@ -546,37 +632,19 @@ class MegaManager private constructor(private val appContext: Context) : Applica
             }
             Log.i(TAG, "ROOT NODE READY")
 
-            if (cachedBackupFolder != null) {
-                try {
-                    if (cachedBackupFolder!!.base64Handle.isNotBlank()) {
-                        Log.i(TAG, "BACKUP FOLDER FOUND (cached)")
-                        Log.i(TAG, "STARTING UPLOAD")
-                        client.uploadFile(localPath, cachedBackupFolder)
-                        return
-                    }
-                } catch (_: Exception) {
-                    cachedBackupFolder = null
-                }
-            }
-
-            val backupFolder = findChildByName(root, BACKUP_FOLDER)
+            val backupFolder = resolveBackupFolder()
 
             if (backupFolder != null) {
-                cachedBackupFolder = backupFolder
-                Log.i(TAG, "BACKUP FOLDER FOUND")
-                Log.i(TAG, "STARTING UPLOAD")
+                Log.i(TAG, "STARTING UPLOAD to handle=${backupFolder.base64Handle}")
                 client.uploadFile(localPath, backupFolder)
             } else {
-                Log.w(TAG, "BACKUP FOLDER MISSING")
+                Log.w(TAG, "BACKUP FOLDER MISSING - REFRESHING NODES...")
                 client.onLoginResult = { success, _ ->
                     client.onLoginResult = null
                     if (success) {
-                        val newRoot = client.megaApi.rootNode
-                        val newBackupFolder = if (newRoot != null) findChildByName(newRoot, BACKUP_FOLDER) else null
+                        val newBackupFolder = resolveBackupFolder()
                         if (newBackupFolder != null) {
-                            cachedBackupFolder = newBackupFolder
-                            Log.i(TAG, "BACKUP FOLDER FOUND")
-                            Log.i(TAG, "STARTING UPLOAD")
+                            Log.i(TAG, "STARTING UPLOAD to handle=${newBackupFolder.base64Handle}")
                             client.uploadFile(localPath, newBackupFolder)
                         } else {
                             Log.w(TAG, "AUTO CREATING BACKUP FOLDER")
@@ -584,8 +652,8 @@ class MegaManager private constructor(private val appContext: Context) : Applica
                                 client.onCreateFolderResult = null
                                 if (createSuccess && folderNode != null) {
                                     cachedBackupFolder = folderNode
-                                    val parentNode = client.megaApi.getParentNode(folderNode)
-                                    Log.i(TAG, "BACKUP FOLDER CREATED handle=${folderNode.base64Handle} parent=${parentNode?.base64Handle ?: "unknown"}")
+                                    securePrefs.edit().putString(KEY_BACKUP_HANDLE, folderNode.base64Handle).apply()
+                                    Log.i(TAG, "BACKUP FOLDER CREATED handle=${folderNode.base64Handle}")
                                     Log.i(TAG, "STARTING UPLOAD")
                                     client.uploadFile(localPath, folderNode)
                                 } else {
@@ -593,7 +661,13 @@ class MegaManager private constructor(private val appContext: Context) : Applica
                                     result.success(mapOf<String, Any>("success" to false, "error" to "Failed to create backup folder: ${createError ?: "unknown"}"))
                                 }
                             }
-                            client.createFolder(BACKUP_FOLDER, newRoot ?: root)
+                            val newRoot = client.megaApi.rootNode
+                            if (newRoot != null) {
+                                client.createFolder(BACKUP_FOLDER, newRoot)
+                            } else {
+                                tempFile.delete()
+                                result.success(mapOf<String, Any>("success" to false, "error" to "Root node null after fetchNodes"))
+                            }
                         }
                     } else {
                         Log.e(TAG, "REFRESH NODES FAILED DURING UPLOAD")

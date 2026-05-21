@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -150,6 +151,14 @@ class VaultAuthService {
     if (types.contains(BiometricType.fingerprint)) return 'Fingerprint';
     if (types.contains(BiometricType.iris)) return 'Iris';
     return 'Device Biometrics';
+  }
+
+  Future<IconData> biometricTypeIcon() async {
+    final types = await getAvailableBiometrics();
+    if (types.contains(BiometricType.face)) return Icons.face;
+    if (types.contains(BiometricType.fingerprint)) return Icons.fingerprint;
+    if (types.contains(BiometricType.iris)) return Icons.visibility;
+    return Icons.security;
   }
 
   // Returns true only when ALL three are true:
@@ -327,10 +336,11 @@ class VaultAuthService {
   }
 
   Future<bool> authenticateBiometric() async {
+    final label = await biometricTypeLabel();
     return _localAuth.authenticate(
-      localizedReason: 'Unlock VaultX',
+      localizedReason: 'Authenticate with $label to unlock VaultX',
       options: const AuthenticationOptions(
-        biometricOnly: false,
+        biometricOnly: true,
         stickyAuth: true,
       ),
     );
