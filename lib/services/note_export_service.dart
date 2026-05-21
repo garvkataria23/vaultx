@@ -52,9 +52,14 @@ class NoteExportService {
         throw Exception('Failed to create structured export ZIP');
       }
 
-      final dir = await getTemporaryDirectory();
+      final tempDir = await getTemporaryDirectory();
+      final exportDir = Directory('${tempDir.path}/VaultX_Exports');
+      if (!await exportDir.exists()) {
+        await exportDir.create(recursive: true);
+      }
+      
       final timestamp = DateFormat('yyyyMMdd').format(DateTime.now());
-      final finalPath = '${dir.path}/VaultX_Full_Export_$timestamp.zip';
+      final finalPath = '${exportDir.path}/VaultX_Backup_$timestamp.zip';
       
       // If destination exists, delete it first
       final destFile = File(finalPath);

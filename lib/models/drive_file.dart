@@ -9,6 +9,9 @@ class SecureDriveFolder {
     this.isLocked = false,
     this.deleted = false,
     this.deletedAt,
+    this.autoDeleteAt,
+    this.originalFolder,
+    this.deletedBy = 'user',
   });
 
   final String name;
@@ -20,6 +23,9 @@ class SecureDriveFolder {
   bool isLocked;
   bool deleted;
   DateTime? deletedAt;
+  DateTime? autoDeleteAt;
+  String? originalFolder;
+  String deletedBy;
 
   SecureDriveFolder copyWith({
     String? name,
@@ -31,6 +37,9 @@ class SecureDriveFolder {
     bool? isLocked,
     bool? deleted,
     DateTime? deletedAt,
+    DateTime? autoDeleteAt,
+    String? originalFolder,
+    String? deletedBy,
   }) {
     return SecureDriveFolder(
       name: name ?? this.name,
@@ -42,6 +51,9 @@ class SecureDriveFolder {
       isLocked: isLocked ?? this.isLocked,
       deleted: deleted ?? this.deleted,
       deletedAt: deletedAt ?? this.deletedAt,
+      autoDeleteAt: autoDeleteAt ?? this.autoDeleteAt,
+      originalFolder: originalFolder ?? this.originalFolder,
+      deletedBy: deletedBy ?? this.deletedBy,
     );
   }
 
@@ -63,6 +75,9 @@ class SecureDriveFolder {
     'isLocked': isLocked,
     'deleted': deleted,
     'deletedAt': deletedAt?.toIso8601String(),
+    'autoDeleteAt': autoDeleteAt?.toIso8601String(),
+    'originalFolder': originalFolder,
+    'deletedBy': deletedBy,
   };
 
   static SecureDriveFolder fromJson(Map<String, dynamic> json) =>
@@ -80,6 +95,11 @@ class SecureDriveFolder {
         deletedAt: json['deletedAt'] != null
             ? DateTime.tryParse(json['deletedAt'] as String? ?? '')
             : null,
+        autoDeleteAt: json['autoDeleteAt'] != null
+            ? DateTime.tryParse(json['autoDeleteAt'] as String? ?? '')
+            : null,
+        originalFolder: json['originalFolder'] as String?,
+        deletedBy: json['deletedBy'] as String? ?? 'user',
       );
 }
 
@@ -104,6 +124,9 @@ class SecureDriveFile {
     this.backupExcluded = false,
     this.deleted = false,
     this.deletedAt,
+    this.autoDeleteAt,
+    this.originalFolder,
+    this.deletedBy = 'user',
   }) : createdAt = createdAt ?? DateTime.now(),
        updatedAt = updatedAt ?? DateTime.now();
 
@@ -126,6 +149,9 @@ class SecureDriveFile {
   bool backupExcluded;
   bool deleted;
   DateTime? deletedAt;
+  DateTime? autoDeleteAt;
+  String? originalFolder;
+  String deletedBy;
 
   SecureDriveFile copyWith({
     String? name,
@@ -145,6 +171,9 @@ class SecureDriveFile {
     DateTime? updatedAt,
     bool? deleted,
     DateTime? deletedAt,
+    DateTime? autoDeleteAt,
+    String? originalFolder,
+    String? deletedBy,
   }) {
     return SecureDriveFile(
       id: id,
@@ -166,6 +195,9 @@ class SecureDriveFile {
       backupExcluded: backupExcluded ?? this.backupExcluded,
       deleted: deleted ?? this.deleted,
       deletedAt: deletedAt ?? this.deletedAt,
+      autoDeleteAt: autoDeleteAt ?? this.autoDeleteAt,
+      originalFolder: originalFolder ?? this.originalFolder,
+      deletedBy: deletedBy ?? this.deletedBy,
     );
   }
 
@@ -274,9 +306,14 @@ class SecureDriveFile {
     'archived': archived,
     'archivedAt': archivedAt?.toIso8601String(),
     'backupExcluded': backupExcluded,
+    'deleted': deleted,
+    'deletedAt': deletedAt?.toIso8601String(),
+    'autoDeleteAt': autoDeleteAt?.toIso8601String(),
+    'originalFolder': originalFolder,
+    'deletedBy': deletedBy,
   };
 
-  static SecureDriveFile fromJson(Map<String, dynamic> json) {
+  factory SecureDriveFile.fromJson(Map<String, dynamic> json) {
     String? safeCreatedAt;
     String? safeUpdatedAt;
     try {
@@ -310,6 +347,11 @@ class SecureDriveFile {
       deletedAt: json['deletedAt'] != null
           ? DateTime.tryParse(json['deletedAt'] as String? ?? '')
           : null,
+      autoDeleteAt: json['autoDeleteAt'] != null
+          ? DateTime.tryParse(json['autoDeleteAt'] as String? ?? '')
+          : null,
+      originalFolder: json['originalFolder'] as String?,
+      deletedBy: json['deletedBy'] as String? ?? 'user',
     );
   }
 }

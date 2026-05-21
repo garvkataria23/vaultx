@@ -7,8 +7,21 @@ import 'package:flutter/services.dart';
 class MegaSdkService {
   static const _channel = MethodChannel('vaultx/mega');
 
-  MegaSdkService._();
+  MegaSdkService._() {
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'onUploadProgress') {
+        final args = Map<String, dynamic>.from(call.arguments);
+        final fileName = args['fileName'] as String;
+        final uploaded = args['uploaded'] as int;
+        final total = args['total'] as int;
+        _progressController.add((fileName: fileName, uploaded: uploaded, total: total));
+      }
+    });
+  }
   static final MegaSdkService instance = MegaSdkService._();
+
+  final _progressController = StreamController<({String fileName, int uploaded, int total})>.broadcast();
+  Stream<({String fileName, int uploaded, int total})> get progressStream => _progressController.stream;
 
   /// Login with email and password via the official SDK.
   Future<Map<String, dynamic>> login(String email, String password) async {
@@ -141,6 +154,16 @@ class MegaSdkService {
   Future<bool> isLoggedIn() async {
     try {
       final result = await _channel.invokeMethod('isLoggedIn');
+      return result == true;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// Check if MEGA is fully initialized and ready for transfers.
+  Future<bool> isReady() async {
+    try {
+      final result = await _channel.invokeMethod('isReady');
       return result == true;
     } on PlatformException {
       return false;

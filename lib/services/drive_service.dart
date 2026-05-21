@@ -15,6 +15,7 @@ import 'backup_change_tracker.dart';
 import 'compression_service.dart';
 import 'crypto_service.dart';
 import 'vault_repository.dart';
+import 'audit_log.dart';
 
 enum DriveImageCompression { original, high, medium, low }
 enum DriveVideoCompression { original, p720, p480, reduceBitrate }
@@ -118,15 +119,28 @@ class DriveService {
   }
 
   Future<void> moveToTrash(SecureDriveFile file) async {
+    final settingsBox = Hive.box('vaultx_settings');
+    final retentionDays = settingsBox.get('trashRetentionDays', defaultValue: 30) as int;
+    
+    if (retentionDays == 0) {
+      await permanentlyDeleteFile(file);
+      return;
+    }
+
+    DateTime? autoDeleteAt = DateTime.now().add(Duration(days: retentionDays));
+
     final trashedFile = file.copyWith(
       deleted: true,
       deletedAt: DateTime.now(),
+      autoDeleteAt: autoDeleteAt,
+      originalFolder: file.folder,
       pinned: false,
       favorite: false,
     );
     await _persist(trashedFile);
     final idx = _cache.indexWhere((f) => f.id == file.id);
     if (idx >= 0) _cache[idx] = trashedFile;
+    await AuditLog.write('ITEM MOVED TO TRASH: ${file.name} (${file.id})');
     BackupChangeTracker.instance.notifyDriveChanged();
   }
 
@@ -134,10 +148,12 @@ class DriveService {
     final restoredFile = file.copyWith(
       deleted: false,
       deletedAt: null,
+      autoDeleteAt: null,
     );
     await _persist(restoredFile);
     final idx = _cache.indexWhere((f) => f.id == file.id);
     if (idx >= 0) _cache[idx] = restoredFile;
+    await AuditLog.write('ITEM RESTORED: ${file.name} (${file.id})');
     BackupChangeTracker.instance.notifyDriveChanged();
   }
 
@@ -145,15 +161,27 @@ class DriveService {
     await EncryptedBlobService.secureDeletePath(file.encryptedPath);
     await _remove(file.id);
     _cache.removeWhere((f) => f.id == file.id);
+    await AuditLog.write('ITEM PERMANENTLY DELETED: ${file.name} (${file.id})');
     BackupChangeTracker.instance.notifyDriveChanged(
       estimatedBytes: file.size,
     );
   }
 
   Future<void> moveFolderToTrash(SecureDriveFolder folder) async {
+    final settingsBox = Hive.box('vaultx_settings');
+    final retentionDays = settingsBox.get('trashRetentionDays', defaultValue: 30) as int;
+    
+    if (retentionDays == 0) {
+      await permanentlyDeleteFolder(folder);
+      return;
+    }
+
+    DateTime? autoDeleteAt = DateTime.now().add(Duration(days: retentionDays));
+
     final trashedFolder = folder.copyWith(
       deleted: true,
       deletedAt: DateTime.now(),
+      autoDeleteAt: autoDeleteAt,
       pinned: false,
     );
     await saveFolderMetadata(trashedFolder);
@@ -163,18 +191,29 @@ class DriveService {
     for (final file in files.where((f) => f.folder == folder.name)) {
       await moveToTrash(file);
     }
+    await AuditLog.write('FOLDER MOVED TO TRASH: ${folder.name}');
   }
 
   Future<void> restoreFolder(SecureDriveFolder folder) async {
     final restoredFolder = folder.copyWith(
       deleted: false,
       deletedAt: null,
+      autoDeleteAt: null,
     );
     await saveFolderMetadata(restoredFolder);
     
-    // Also restore all files that were deleted at the same time or were in this folder
-    // Note: This might restore files that were deleted individually before the folder.
-    // For simplicity, we just restore the folder metadata.
+    // Also restore all files that were in this folder AND deleted at roughly the same time
+    // Or just restore the folder metadata and let users restore files manually?
+    // Requirement says "Return original folder", so we should ideally restore contents if they were deleted with it.
+    final trashFiles = await loadTrashFiles();
+    for (final file in trashFiles.where((f) => f.originalFolder == folder.name)) {
+      if (file.deletedAt != null && folder.deletedAt != null) {
+        if (file.deletedAt!.difference(folder.deletedAt!).inSeconds.abs() < 5) {
+          await restoreFile(file);
+        }
+      }
+    }
+    await AuditLog.write('FOLDER RESTORED: ${folder.name}');
   }
 
   Future<void> permanentlyDeleteFolder(SecureDriveFolder folder) async {
@@ -183,9 +222,10 @@ class DriveService {
     
     // Also permanently delete all files in this folder that are already in trash
     final trashFiles = await loadTrashFiles();
-    for (final file in trashFiles.where((f) => f.folder == folder.name)) {
+    for (final file in trashFiles.where((f) => f.originalFolder == folder.name)) {
       await permanentlyDeleteFile(file);
     }
+    await AuditLog.write('FOLDER PERMANENTLY DELETED: ${folder.name}');
   }
 
   Future<void> emptyTrash() async {
@@ -197,6 +237,7 @@ class DriveService {
     for (final folder in trashFolders) {
       await permanentlyDeleteFolder(folder);
     }
+    await AuditLog.write('TRASH CLEANED');
   }
 
   Future<void> _persist(SecureDriveFile file) async {

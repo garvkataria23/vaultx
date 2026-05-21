@@ -308,14 +308,13 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
       final confirm = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: Text('Delete ${selectedItems.length} items?'),
-          content: const Text('This will permanently delete the selected items.'),
+          title: Text('Move ${selectedItems.length} items to Trash?'),
+          content: const Text('Selected items will be moved to trash.'),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
             FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: Theme.of(ctx).colorScheme.error),
               onPressed: () => Navigator.pop(ctx, true), 
-              child: const Text('Delete'),
+              child: const Text('Move to Trash'),
             ),
           ],
         ),
@@ -323,12 +322,12 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
       if (confirm == true) {
         for (final item in selectedItems) {
           if (item.isPassword && item.passwordEntry != null) {
-            await widget.passwordVault.delete(item.id);
+            await widget.passwordVault.moveToTrash(item.passwordEntry!);
           } else if (item.note != null) {
-            await widget.repo.secureDelete(item.note!);
+            await widget.repo.moveToTrash(item.note!);
           }
         }
-        FloatingNotificationService.instance.show('${selectedItems.length} items permanently deleted');
+        FloatingNotificationService.instance.show('${selectedItems.length} items moved to trash');
       }
     }
 
@@ -352,27 +351,24 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete permanently'),
-        content: Text('Permanently delete "${note.title}"?'),
+        title: const Text('Move to Trash'),
+        content: Text('Move "${note.title}" to trash?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(ctx).colorScheme.error,
-            ),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Delete'),
+            child: const Text('Move to Trash'),
           ),
         ],
       ),
     );
     if (confirm == true && mounted) {
-      await widget.repo.secureDelete(note);
+      await widget.repo.moveToTrash(note);
       if (!mounted) return;
-      FloatingNotificationService.instance.show('Note permanently deleted');
+      FloatingNotificationService.instance.show('Note moved to trash');
       await _load();
     }
   }
@@ -381,27 +377,24 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete permanently'),
-        content: Text('Permanently delete "${entry.serviceName}"?'),
+        title: const Text('Move to Trash'),
+        content: Text('Move "${entry.serviceName}" to trash?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(ctx).colorScheme.error,
-            ),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Delete'),
+            child: const Text('Move to Trash'),
           ),
         ],
       ),
     );
     if (confirm == true && mounted) {
-      await widget.passwordVault.delete(entry.id);
+      await widget.passwordVault.moveToTrash(entry);
       if (!mounted) return;
-      FloatingNotificationService.instance.show('Password permanently deleted');
+      FloatingNotificationService.instance.show('Password moved to trash');
       await _load();
     }
   }

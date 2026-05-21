@@ -147,6 +147,56 @@ class PasswordVaultService {
     BackupChangeTracker.instance.notifyPasswordManagerChanged();
   }
 
+  Future<List<PasswordEntry>> loadTrashEntries() async {
+    final all = await loadEntries();
+    return all.where((e) => e.deleted).toList();
+  }
+
+  Future<void> moveToTrash(PasswordEntry entry) async {
+    final settingsBox = Hive.box('vaultx_settings');
+    final retentionDays = settingsBox.get('trashRetentionDays', defaultValue: 30) as int;
+    
+    if (retentionDays == 0) {
+      await permanentlyDeleteEntry(entry);
+      return;
+    }
+
+    DateTime? autoDeleteAt = DateTime.now().add(Duration(days: retentionDays));
+
+    final trashedEntry = entry.copyWith(
+      deleted: true,
+      deletedAt: DateTime.now(),
+      autoDeleteAt: autoDeleteAt,
+      favorite: false,
+      archived: false,
+    );
+    await save(trashedEntry);
+    await AuditLog.write('PASSWORD ENTRY MOVED TO TRASH: ${entry.serviceName}');
+  }
+
+  Future<void> restoreEntry(PasswordEntry entry) async {
+    final restoredEntry = entry.copyWith(
+      deleted: false,
+      deletedAt: null,
+      autoDeleteAt: null,
+    );
+    await save(restoredEntry);
+    await AuditLog.write('PASSWORD ENTRY RESTORED: ${entry.serviceName}');
+  }
+
+  Future<void> permanentlyDeleteEntry(PasswordEntry entry) async {
+    await delete(entry.id);
+    await AuditLog.write('PASSWORD ENTRY PERMANENTLY DELETED: ${entry.serviceName}');
+  }
+
+  Future<void> emptyTrash() async {
+    final trash = await loadTrashEntries();
+    for (final entry in trash) {
+      await permanentlyDeleteEntry(entry);
+    }
+    await AuditLog.write('PASSWORD TRASH CLEANED');
+  }
+
   PasswordEntry? fromCachedData(String id, String salt, Map<String, dynamic> payload) {
     try {
       final recordKey = _crypto.deriveRecordKey(masterKey, id, salt);
@@ -180,13 +230,13 @@ class PasswordVaultService {
   /// Load only non-archived (active) password entries.
   Future<List<PasswordEntry>> loadActiveEntries() async {
     final all = await loadEntries();
-    return all.where((e) => !e.archived).toList();
+    return all.where((e) => !e.archived && !e.deleted).toList();
   }
 
   /// Load only archived password entries.
   Future<List<PasswordEntry>> loadArchivedEntries() async {
     final all = await loadEntries();
-    return all.where((e) => e.archived).toList();
+    return all.where((e) => e.archived && !e.deleted).toList();
   }
 
   /// Toggle archive status: archive if not archived, unarchive if archived.

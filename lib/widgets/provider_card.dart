@@ -79,6 +79,23 @@ class _ProviderCardState extends State<ProviderCard>
     return '${dt.month}/${dt.day}/${dt.year}';
   }
 
+  String _getMegaStatusText(MegaConnectionState? state) {
+    switch (state) {
+      case MegaConnectionState.connecting:
+        return 'Connecting to MEGA...';
+      case MegaConnectionState.restoring:
+        return 'Restoring session...';
+      case MegaConnectionState.fetchingNodes:
+        return 'Fetching nodes...';
+      case MegaConnectionState.failed:
+        return 'Connection failed';
+      case MegaConnectionState.ready:
+        return 'Connected';
+      case null:
+        return 'Connecting...';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -86,6 +103,8 @@ class _ProviderCardState extends State<ProviderCard>
     final info = widget.manager.getStorageInfo(widget.provider);
     final isConnected = state.connected;
     final isUploading = state.uploading;
+    final isReconnecting = state.isReconnecting;
+    final isMegaNotReady = widget.provider == CloudProvider.mega && state.megaState != MegaConnectionState.ready;
     final name = widget.provider.displayName;
 
     final color = switch (widget.provider) {
@@ -137,11 +156,23 @@ class _ProviderCardState extends State<ProviderCard>
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(name, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
-                        if (isConnected && state.email != null)
+                        if (isConnected && state.email != null) ...[
+                          if (widget.provider == CloudProvider.mega && state.megaState != MegaConnectionState.ready)
+                            Text(
+                              _getMegaStatusText(state.megaState),
+                              style: TextStyle(fontSize: 13, color: cs.primary, fontWeight: FontWeight.w500),
+                            )
+                          else
+                            Text(
+                              state.email!,
+                              style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant),
+                              overflow: TextOverflow.ellipsis,
+                            )
+                        ]
+                        else if (isReconnecting)
                           Text(
-                            state.email!,
-                            style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant),
-                            overflow: TextOverflow.ellipsis,
+                            widget.provider == CloudProvider.mega ? 'Connecting to MEGA...' : 'Reconnecting...',
+                            style: TextStyle(fontSize: 13, color: cs.primary, fontWeight: FontWeight.w500),
                           )
                         else if (!isConnected)
                           Text(
@@ -151,7 +182,7 @@ class _ProviderCardState extends State<ProviderCard>
                       ],
                     ),
                   ),
-                  if (isUploading)
+                  if (isUploading || isReconnecting || isMegaNotReady)
                     const _AnimatedSyncIcon()
                   else
                     _StatusBadge(isConnected: isConnected),
@@ -238,7 +269,7 @@ class _ProviderCardState extends State<ProviderCard>
                   children: [
                     Expanded(
                       child: FilledButton.icon(
-                        onPressed: isUploading ? null : widget.onBackup,
+                        onPressed: (isUploading || isReconnecting || isMegaNotReady) ? null : widget.onBackup,
                         icon: const Icon(Icons.backup_outlined, size: 18),
                         label: const Text('Backup'),
                         style: FilledButton.styleFrom(
@@ -250,7 +281,7 @@ class _ProviderCardState extends State<ProviderCard>
                     const SizedBox(width: 12),
                     Expanded(
                       child: OutlinedButton.icon(
-                        onPressed: isUploading ? null : widget.onRestore,
+                        onPressed: (isUploading || isReconnecting || isMegaNotReady) ? null : widget.onRestore,
                         icon: const Icon(Icons.restore, size: 18),
                         label: const Text('Restore'),
                         style: OutlinedButton.styleFrom(
@@ -261,13 +292,14 @@ class _ProviderCardState extends State<ProviderCard>
                     ),
                   ],
                 )
+
               else
                 SizedBox(
                   width: double.infinity,
                   child: FilledButton.icon(
-                    onPressed: widget.onSignIn,
+                    onPressed: isReconnecting ? null : widget.onSignIn,
                     icon: const Icon(Icons.link, size: 18),
-                    label: const Text('Connect Provider'),
+                    label: Text(isReconnecting ? 'Reconnecting...' : 'Connect Provider'),
                     style: FilledButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 14),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),

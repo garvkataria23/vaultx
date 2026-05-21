@@ -1,6 +1,6 @@
 export 'add_edit_password_screen.dart' show AddEditPasswordScreen;
 export 'password_manager_screen.dart' show PasswordManagerScreen;
-export 'backup_screen.dart' show BackupScreen;
+export 'backup_restore_screen.dart' show BackupRestoreScreen;
 export 'onboarding_screen.dart' show OnboardingScreen;
 export 'restore_screen.dart' show RestoreScreen;
 export 'setup_screen.dart' show SetupScreen;

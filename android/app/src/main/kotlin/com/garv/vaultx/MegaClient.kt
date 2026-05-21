@@ -19,10 +19,10 @@ class MegaClient private constructor(
     val megaApi: MegaApi = MegaApi(appKey, userAgent, context.cacheDir.absolutePath)
 
     var onLoginResult: ((Boolean, String?) -> Unit)? = null
-    var onUploadResult: ((Boolean, String?, Long?) -> Unit)? = null
-    var onUploadProgress: ((Long, Long) -> Unit)? = null
-    var onDownloadResult: ((Boolean, String?, String?) -> Unit)? = null
-    var onDownloadProgress: ((Long, Long) -> Unit)? = null
+    var onUploadResult: ((String, Boolean, String?, Long?) -> Unit)? = null
+    var onUploadProgress: ((String, Long, Long) -> Unit)? = null
+    var onDownloadResult: ((String, Boolean, String?, String?) -> Unit)? = null
+    var onDownloadProgress: ((String, Long, Long) -> Unit)? = null
     var onLogoutResult: ((Boolean, String?) -> Unit)? = null
     var onTransferStart: ((String, Long) -> Unit)? = null
     var onCreateFolderResult: ((Boolean, String?, MegaNode?) -> Unit)? = null
@@ -61,31 +61,31 @@ class MegaClient private constructor(
             when (request.type) {
                 MegaRequest.TYPE_LOGIN -> {
                     if (e.errorCode == MegaError.API_OK) {
-                        Log.i(TAG, "Login success")
+                        Log.i(TAG, "LOGIN SUCCESS - FETCHING NODES")
                         megaReady = false
-                        Log.i(TAG, "fetchNodes called")
                         megaApi.fetchNodes()
                     } else {
-                        Log.e(TAG, "Login failed: ${e.errorString} (code=${e.errorCode})")
+                        Log.e(TAG, "LOGIN FAILED: ${e.errorString} (code=${e.errorCode})")
                         onLoginResult?.invoke(false, "Login failed: ${e.errorString} (code=${e.errorCode})")
                     }
                 }
                 MegaRequest.TYPE_FETCH_NODES -> {
-                    megaReady = e.errorCode == MegaError.API_OK
-                    if (megaReady) {
-                        Log.i(TAG, "Nodes loaded")
-                        val root = megaApi.rootNode
-                        if (root != null) {
-                            Log.i(TAG, "Root node available")
-                        } else {
-                            Log.w(TAG, "Root node null after fetchNodes")
-                        }
+                    val success = e.errorCode == MegaError.API_OK
+                    val root = megaApi.rootNode
+                    val actuallyReady = success && root != null
+                    
+                    megaReady = actuallyReady
+                    if (actuallyReady) {
+                        Log.i(TAG, "FETCH NODES SUCCESS - MEGA READY TRUE (root ok)")
                     } else {
-                        Log.e(TAG, "fetchNodes failed: ${e.errorString} (code=${e.errorCode})")
+                        Log.e(TAG, "FETCH NODES NOT READY: success=$success, root=${root != null}")
                     }
+                    
                     onLoginResult?.invoke(
-                        megaReady,
-                        if (e.errorCode != MegaError.API_OK) "fetchNodes failed: ${e.errorString} (code=${e.errorCode})" else null
+                        actuallyReady,
+                        if (!success) "fetchNodes failed: ${e.errorString} (code=${e.errorCode})" 
+                        else if (root == null) "Root node null after fetchNodes" 
+                        else null
                     )
                 }
                 MegaRequest.TYPE_LOGOUT -> {
@@ -146,14 +146,15 @@ class MegaClient private constructor(
             val transferPath = transfer.path ?: ""
 
             if (success) {
-                Log.i(TAG, "onTransferFinish: fileName=$fileName errorCode=${e.errorCode} errorString=$errString path=$transferPath")
+                Log.i(TAG, "onTransferFinish SUCCESS: $fileName at $transferPath")
             } else {
-                Log.e(TAG, "onTransferFinish: fileName=$fileName errorCode=${e.errorCode} errorName=$errName errorString=$errString path=$transferPath")
+                Log.e(TAG, "onTransferFinish FAILURE: $fileName - $errName: $errString at $transferPath")
             }
 
             when (transfer.type) {
                 MegaTransfer.TYPE_UPLOAD -> {
                     onUploadResult?.invoke(
+                        transferPath,
                         success,
                         if (!success) "$errName: $errString" else null,
                         if (success) transfer.nodeHandle else null
@@ -161,6 +162,7 @@ class MegaClient private constructor(
                 }
                 MegaTransfer.TYPE_DOWNLOAD -> {
                     onDownloadResult?.invoke(
+                        transferPath,
                         success,
                         if (!success) "$errName: $errString" else null,
                         if (success) transfer.path else null
@@ -171,17 +173,21 @@ class MegaClient private constructor(
 
         override fun onTransferUpdate(api: MegaApi, transfer: MegaTransfer) {
             val fileName = transfer.fileName ?: "unknown"
+            val transferPath = transfer.path ?: ""
             val pct = if (transfer.totalBytes > 0) {
                 (transfer.transferredBytes * 100 / transfer.totalBytes)
             } else 0
+            
             when (transfer.type) {
                 MegaTransfer.TYPE_UPLOAD -> {
-                    Log.d(TAG, "onTransferUpdate: upload fileName=$fileName percent=$pct")
-                    onUploadProgress?.invoke(transfer.transferredBytes, transfer.totalBytes)
+                    if (pct % 20 == 0L) {
+                        Log.d(TAG, "Upload progress: $fileName $pct%")
+                    }
+                    onUploadProgress?.invoke(transferPath, transfer.transferredBytes, transfer.totalBytes)
                 }
                 MegaTransfer.TYPE_DOWNLOAD -> {
-                    Log.d(TAG, "onTransferUpdate: download fileName=$fileName percent=$pct")
-                    onDownloadProgress?.invoke(transfer.transferredBytes, transfer.totalBytes)
+                    Log.d(TAG, "Download progress: $fileName $pct%")
+                    onDownloadProgress?.invoke(transferPath, transfer.transferredBytes, transfer.totalBytes)
                 }
             }
         }
@@ -216,35 +222,34 @@ class MegaClient private constructor(
     }
 
     fun uploadFile(localPath: String, parentNode: MegaNode? = null) {
-        Log.i(TAG, "Upload called: $localPath")
+        Log.i(TAG, "Upload request: $localPath")
         if (!megaReady) {
-            Log.e(TAG, "MEGA NOT READY")
-            onUploadResult?.invoke(false, "MEGA NOT READY", null)
+            Log.e(TAG, "UPLOAD FAILED: MEGA NOT READY")
+            onUploadResult?.invoke(localPath, false, "MEGA NOT READY", null)
             return
         }
 
         val target = parentNode ?: megaApi.rootNode
         if (target == null) {
-            Log.e(TAG, "TARGET NODE NULL")
+            Log.e(TAG, "UPLOAD FAILED: TARGET NODE NULL")
             megaApi.fetchNodes()
-            onUploadResult?.invoke(false, "TARGET NODE NULL", null)
+            onUploadResult?.invoke(localPath, false, "TARGET NODE NULL", null)
             return
         }
 
         val file = File(localPath)
         if (!file.exists()) {
-            Log.e(TAG, "BACKUP FILE MISSING: $localPath")
-            onUploadResult?.invoke(false, "FILE NOT FOUND", null)
+            Log.e(TAG, "UPLOAD FAILED: FILE MISSING: $localPath")
+            onUploadResult?.invoke(localPath, false, "FILE NOT FOUND", null)
             return
         }
         if (file.length() == 0L) {
-            Log.e(TAG, "EMPTY BACKUP FILE: $localPath")
-            onUploadResult?.invoke(false, "EMPTY BACKUP FILE", null)
+            Log.e(TAG, "UPLOAD FAILED: EMPTY FILE: $localPath")
+            onUploadResult?.invoke(localPath, false, "EMPTY BACKUP FILE", null)
             return
         }
 
-        Log.i(TAG, "Target node available, starting upload")
-        Log.i(TAG, "Upload starting")
+        Log.i(TAG, "Starting upload of ${file.name} (${file.length()} bytes) to ${target.name}")
         megaApi.startUpload(localPath, target, null, null)
     }
 
@@ -252,12 +257,12 @@ class MegaClient private constructor(
         val node = megaApi.getNodeByHandle(nodeHandle)
         if (node == null) {
             Log.e(TAG, "Download failed: node not found for handle $nodeHandle")
-            onDownloadResult?.invoke(false, "Node not found", null)
+            onDownloadResult?.invoke(localPath, false, "Node not found", null)
             return
         }
         if (!megaReady) {
             Log.e(TAG, "Download failed: fetchNodes not completed")
-            onDownloadResult?.invoke(false, "Download not ready. Complete login and node fetch first.", null)
+            onDownloadResult?.invoke(localPath, false, "Download not ready. Complete login and node fetch first.", null)
             return
         }
         Log.i(TAG, "Starting download: $localPath")

@@ -125,12 +125,14 @@ abstract class BaseCloudBackupProvider implements CloudStorageProvider {
     bool compressMedia = false,
     bool useArchive = false,
   }) async {
+    onPhaseChange?.call('Preparing connection...');
     if (!await ensureAuthenticated()) {
       debugPrint('UPLOAD: not authenticated');
       return false;
     }
 
     try {
+      onPhaseChange?.call('Generating backup data...');
       debugPrint('UPLOAD: generating backup data (compressMedia=$compressMedia)...');
       final backupData = await backupMapGenerator(compressMedia: compressMedia);
       final timestamp = DateTime.now().toUtc().millisecondsSinceEpoch;

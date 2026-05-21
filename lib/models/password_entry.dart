@@ -14,6 +14,11 @@ class PasswordEntry {
     this.archived = false,
     this.archivedAt,
     this.backupExcluded = false,
+    this.deleted = false,
+    this.deletedAt,
+    this.autoDeleteAt,
+    this.originalFolder,
+    this.deletedBy = 'user',
   }) : createdAt = createdAt ?? DateTime.now(),
        updatedAt = updatedAt ?? DateTime.now();
 
@@ -31,6 +36,11 @@ class PasswordEntry {
   bool archived;
   DateTime? archivedAt;
   bool backupExcluded;
+  bool deleted;
+  DateTime? deletedAt;
+  DateTime? autoDeleteAt;
+  String? originalFolder;
+  String deletedBy;
 
   PasswordEntry copyWith({
     String? id,
@@ -47,6 +57,11 @@ class PasswordEntry {
     bool? archived,
     DateTime? archivedAt,
     bool? backupExcluded,
+    bool? deleted,
+    DateTime? deletedAt,
+    DateTime? autoDeleteAt,
+    String? originalFolder,
+    String? deletedBy,
   }) =>
       PasswordEntry(
         id: id ?? this.id,
@@ -67,10 +82,15 @@ class PasswordEntry {
                 ? null
                 : (archivedAt ?? this.archivedAt),
         backupExcluded: backupExcluded ?? this.backupExcluded,
+        deleted: deleted ?? this.deleted,
+        deletedAt: deletedAt ?? this.deletedAt,
+        autoDeleteAt: autoDeleteAt ?? this.autoDeleteAt,
+        originalFolder: originalFolder ?? this.originalFolder,
+        deletedBy: deletedBy ?? this.deletedBy,
       );
 
   bool get isLocalOnly => backupExcluded;
-  bool shouldIncludeInBackup() => !backupExcluded;
+  bool shouldIncludeInBackup() => !backupExcluded && !deleted;
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -87,6 +107,11 @@ class PasswordEntry {
     'archived': archived,
     'archivedAt': archivedAt?.toIso8601String(),
     'backupExcluded': backupExcluded,
+    'deleted': deleted,
+    'deletedAt': deletedAt?.toIso8601String(),
+    'autoDeleteAt': autoDeleteAt?.toIso8601String(),
+    'originalFolder': originalFolder,
+    'deletedBy': deletedBy,
   };
 
   factory PasswordEntry.fromJson(Map<String, dynamic> json) {
@@ -114,6 +139,11 @@ class PasswordEntry {
       archived: json['archived'] as bool? ?? false,
       archivedAt: json['archivedAt'] != null ? DateTime.tryParse(json['archivedAt'] as String) : null,
       backupExcluded: json['backupExcluded'] as bool? ?? false,
+      deleted: json['deleted'] as bool? ?? false,
+      deletedAt: json['deletedAt'] != null ? DateTime.tryParse(json['deletedAt'] as String) : null,
+      autoDeleteAt: json['autoDeleteAt'] != null ? DateTime.tryParse(json['autoDeleteAt'] as String) : null,
+      originalFolder: json['originalFolder'] as String?,
+      deletedBy: json['deletedBy'] as String? ?? 'user',
     );
   }
 }

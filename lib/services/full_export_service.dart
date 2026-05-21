@@ -22,13 +22,16 @@ class FullExportService {
   /// 
   /// Structure:
   /// VaultX_Export/
-  ///   notes/             (Decrypted main notes)
-  ///   hidden_vault/      (Decrypted hidden notes)
-  ///   images/            (Encrypted image blobs)
-  ///   videos/            (Encrypted video blobs)
-  ///   audio/             (Encrypted audio blobs)
-  ///   pdf/               (Encrypted PDF blobs)
-  ///   files/             (Other encrypted blobs)
+  ///   notes_json/        (Decrypted main notes in JSON)
+  ///   notes_txt/         (Human readable main notes in TXT)
+  ///   hidden_vault/
+  ///     hidden_json/     (Decrypted hidden notes in JSON)
+  ///     hidden_txt/      (Human readable hidden notes in TXT)
+  ///   images/            (Decrypted image files)
+  ///   videos/            (Decrypted video files)
+  ///   audio/             (Decrypted audio files)
+  ///   pdf/               (Decrypted PDF files)
+  ///   files/             (Decrypted other files)
   ///   folders/           (Folder metadata)
   ///   metadata/          (Raw Hive records for restore, settings, passwords)
   ///   vault_data.json    (Manifest)
@@ -64,10 +67,17 @@ class FullExportService {
           final payload = Map<String, dynamic>.from(raw['payload'] as Map);
           final recordKey = crypto.deriveRecordKey(masterKey, id, salt);
           final clear = crypto.decryptJson(payload, recordKey);
+          final note = SecureNote.fromJson(clear);
+          final safeTitle = _getSafeFileName(note.title, id);
           
-          // Save decrypted note for visibility
+          // JSON Export
           final jsonBytes = utf8.encode(jsonEncode(clear));
-          encoder.addArchiveFile(ArchiveFile('$exportRoot/notes/$id.json', jsonBytes.length, jsonBytes));
+          encoder.addArchiveFile(ArchiveFile('$exportRoot/notes_json/$safeTitle.json', jsonBytes.length, jsonBytes));
+          
+          // TXT Export (Human readable)
+          final txtContent = _generateReadableTxt(note);
+          final txtBytes = utf8.encode(txtContent);
+          encoder.addArchiveFile(ArchiveFile('$exportRoot/notes_txt/$safeTitle.txt', txtBytes.length, txtBytes));
           
           // Save raw record for restore
           final rawBytes = utf8.encode(jsonEncode(raw));
@@ -88,10 +98,17 @@ class FullExportService {
           final payload = Map<String, dynamic>.from(raw['payload'] as Map);
           final recordKey = crypto.deriveRecordKey(masterKey, id, salt);
           final clear = crypto.decryptJson(payload, recordKey);
+          final note = SecureNote.fromJson(clear);
+          final safeTitle = _getSafeFileName(note.title, id);
           
-          // Save decrypted note for visibility
+          // JSON Export
           final jsonBytes = utf8.encode(jsonEncode(clear));
-          encoder.addArchiveFile(ArchiveFile('$exportRoot/hidden_vault/$id.json', jsonBytes.length, jsonBytes));
+          encoder.addArchiveFile(ArchiveFile('$exportRoot/hidden_vault/hidden_json/$safeTitle.json', jsonBytes.length, jsonBytes));
+          
+          // TXT Export (Human readable)
+          final txtContent = _generateReadableTxt(note);
+          final txtBytes = utf8.encode(txtContent);
+          encoder.addArchiveFile(ArchiveFile('$exportRoot/hidden_vault/hidden_txt/$safeTitle.txt', txtBytes.length, txtBytes));
           
           // Save raw record for restore
           final rawBytes = utf8.encode(jsonEncode(raw));
@@ -125,8 +142,8 @@ class FullExportService {
               final clearBytes = encryptedBytes.length > 102400
                   ? await crypto.decryptBytesIsolate(encryptedBytes, key)
                   : crypto.decryptBytes(encryptedBytes, key);
-              // Use safe filename: id_name
-              final safeName = '${file.id}_${file.name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')}';
+              
+              final safeName = _getSafeFileName(file.name, file.id, includeExtension: true);
               encoder.addArchiveFile(ArchiveFile('$exportRoot/$folder/$safeName', clearBytes.length, clearBytes));
 
               blobToDir[file.id] = prefix == 'hidden' ? 'vaultx_drive_hidden' : 'vaultx_drive_main';
@@ -139,8 +156,7 @@ class FullExportService {
       }
 
       // 4. Export Attachment Blobs (Decrypted)
-      // We need to find which note owns each blob. For simplicity, we'll iterate through all notes.
-      final allNotes = [..._collectRawRecords(recordsBox, 'main'), ..._collectRawRecords(recordsBox, 'hidden')];
+      final allNotesRaw = [..._collectRawRecords(recordsBox, 'main'), ..._collectRawRecords(recordsBox, 'hidden')];
       final attachmentDir = Directory('${docDir.path}/vaultx_blobs');
 
       if (await attachmentDir.exists()) {
@@ -152,8 +168,9 @@ class FullExportService {
           // Find owner note and attachment metadata
           SecureNote? owner;
           SecureAttachment? attachment;
+          String ownerPrefix = 'main';
 
-          for (final rawNote in allNotes) {
+          for (final rawNote in allNotesRaw) {
             try {
               final id = rawNote['id'] as String;
               final salt = rawNote['salt'] as String;
@@ -165,6 +182,7 @@ class FullExportService {
               if (found.isNotEmpty) {
                 owner = clear;
                 attachment = found.first;
+                ownerPrefix = recordsBox.get('main:$id') != null ? 'main' : 'hidden';
                 break;
               }
             } catch (_) {}
@@ -179,9 +197,9 @@ class FullExportService {
                   : crypto.decryptBytes(encryptedBytes, key);
 
               final folder = _getFolderByKind(attachment.kind);
-              final safeName = '${attachment.id}_${attachment.name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')}';
+              final safeName = _getSafeFileName(attachment.name, attachment.id, includeExtension: true);
 
-              encoder.addArchiveFile(ArchiveFile('$exportRoot/attachments/$folder/$safeName', clearBytes.length, clearBytes));
+              encoder.addArchiveFile(ArchiveFile('$exportRoot/$folder/$safeName', clearBytes.length, clearBytes));
               blobToDir[blobId] = 'vaultx_blobs';
             } catch (e) {
               debugPrint('FullExport: failed to decrypt attachment $blobId: $e');
@@ -229,14 +247,15 @@ class FullExportService {
 
       // 8. vault_data.json (Manifest)
       final manifest = {
-        'version': 3,
+        'version': 4,
         'timestamp': DateTime.now().toIso8601String(),
         'notesCount': notesCount,
         'hiddenNotesCount': hiddenNotesCount,
         'filesCount': filesCount,
         'exportType': 'fully_decrypted',
         'blobMapping': blobToDir,
-      };      final manifestBytes = utf8.encode(jsonEncode(manifest));
+      };
+      final manifestBytes = utf8.encode(jsonEncode(manifest));
       encoder.addArchiveFile(ArchiveFile('$exportRoot/vault_data.json', manifestBytes.length, manifestBytes));
 
       encoder.close();
@@ -247,6 +266,55 @@ class FullExportService {
       encoder.close();
       return null;
     }
+  }
+
+  String _getSafeFileName(String name, String id, {bool includeExtension = false}) {
+    String safeName = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
+    if (safeName.isEmpty) safeName = 'untitled';
+    
+    // To avoid collisions and clarify which file is which, we append a short ID suffix
+    final shortId = id.length > 8 ? id.substring(0, 8) : id;
+    
+    if (includeExtension) {
+      final parts = safeName.split('.');
+      if (parts.length > 1) {
+        final ext = parts.last;
+        final base = parts.sublist(0, parts.length - 1).join('.');
+        return '${base}_$shortId.$ext';
+      }
+    }
+    
+    return '${safeName}_$shortId';
+  }
+
+  String _generateReadableTxt(SecureNote note) {
+    final df = DateFormat('dd MMM yyyy HH:mm');
+    final buf = StringBuffer();
+    buf.writeln('Title: ${note.title}');
+    buf.writeln('Created: ${df.format(note.createdAt)}');
+    buf.writeln('Modified: ${df.format(note.updatedAt)}');
+    buf.writeln('Folder: ${note.folder}');
+    buf.writeln('Tags: ${note.tags.join(', ')}');
+    buf.writeln('Pinned: ${note.pinned ? 'Yes' : 'No'}');
+    buf.writeln('Favorite: ${note.favorite ? 'Yes' : 'No'}');
+    buf.writeln('Archived: ${note.archived ? 'Yes' : 'No'}');
+    buf.writeln('Type: ${note.type.name}');
+    if (note.oneTimeView) buf.writeln('One-time view enabled');
+    if (note.locked) buf.writeln('Note is locked');
+    
+    buf.writeln('\nContent:');
+    buf.writeln('─' * 40);
+    buf.writeln(note.body);
+    buf.writeln('─' * 40);
+    
+    if (note.attachments.isNotEmpty) {
+      buf.writeln('\nAttachments:');
+      for (final a in note.attachments) {
+        buf.writeln('- ${a.name} (${a.kind})');
+      }
+    }
+    
+    return buf.toString();
   }
 
   String _getFolderByKind(String kind) {

@@ -101,6 +101,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
       _trash = TrashService(
         repo: _repo!,
         drive: _drive!,
+        passwords: _passwordVault!,
         vaultKind: widget.authResult.kind,
       );
       _trash!.autoCleanup();
@@ -325,10 +326,10 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
           if (widget.authResult.kind == VaultKind.decoy) {
             await DecoySeedService.deleteNote(n.id);
           } else {
-            await _repo!.delete(n.id);
+            await _repo!.moveToTrash(n);
           }
         }
-        FloatingNotificationService.instance.show('${selectedNotes.length} notes deleted');
+        FloatingNotificationService.instance.show('${selectedNotes.length} notes moved to trash');
         break;
       case 'archive':
         for (final n in selectedNotes) {

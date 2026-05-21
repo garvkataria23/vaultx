@@ -92,81 +92,91 @@ class BackupService {
     final data = <String, dynamic>{};
     final deviceId =
         Hive.box('vaultx_settings').get('deviceId', defaultValue: '') as String;
+    
+    final box = Hive.box('vaultx_settings');
+    final includeNotes = box.get('backupIncludeNotes', defaultValue: true) as bool;
+    final includeHidden = box.get('backupIncludeHidden', defaultValue: true) as bool;
+    final includeDrive = box.get('backupIncludeDrive', defaultValue: true) as bool;
+    final includeMedia = box.get('backupIncludeMedia', defaultValue: true) as bool;
 
     void report() {
       onProgress?.call(BackupProgress(components: components));
     }
 
     // ── 1. Main vault records ────────────────────────────────────────────────
-    components.add(
-      const ComponentProgress(
-        component: BackupComponent.mainVault,
-        state: BackupOperationState.inProgress,
-      ),
-    );
-    report();
-    try {
-      final mainRecords = _collectVaultRecords('main');
-      counts['mainNoteCount'] = mainRecords.length;
-      final jsonStr = _canonicalJsonEncode(mainRecords);
-      final checksum = sha256.convert(utf8.encode(jsonStr)).toString();
-      checksums.add(
-        ComponentChecksum(
+    if (includeNotes) {
+      components.add(
+        const ComponentProgress(
           component: BackupComponent.mainVault,
-          sha256: checksum,
-          byteCount: jsonStr.length,
+          state: BackupOperationState.inProgress,
         ),
       );
-      data['mainVault'] = mainRecords;
-      components[components.length - 1] = components.last.copyWith(
-        state: BackupOperationState.completed,
-        totalItems: mainRecords.length,
-        itemsProcessed: mainRecords.length,
-      );
       report();
-    } catch (e, st) {
-      components[components.length - 1] = components.last.copyWith(
-        state: BackupOperationState.failed,
-        error: e.toString(),
-      );
-      report();
-      _log('BACKUP mainVault ERROR: $e\n$st');
+      try {
+        final mainRecords = _collectVaultRecords('main');
+        counts['mainNoteCount'] = mainRecords.length;
+        final jsonStr = _canonicalJsonEncode(mainRecords);
+        final checksum = sha256.convert(utf8.encode(jsonStr)).toString();
+        checksums.add(
+          ComponentChecksum(
+            component: BackupComponent.mainVault,
+            sha256: checksum,
+            byteCount: jsonStr.length,
+          ),
+        );
+        data['mainVault'] = mainRecords;
+        components[components.length - 1] = components.last.copyWith(
+          state: BackupOperationState.completed,
+          totalItems: mainRecords.length,
+          itemsProcessed: mainRecords.length,
+        );
+        report();
+      } catch (e, st) {
+        components[components.length - 1] = components.last.copyWith(
+          state: BackupOperationState.failed,
+          error: e.toString(),
+        );
+        report();
+        _log('BACKUP mainVault ERROR: $e\n$st');
+      }
     }
 
     // ── 2. Hidden vault records ──────────────────────────────────────────────
-    components.add(
-      const ComponentProgress(
-        component: BackupComponent.hiddenVault,
-        state: BackupOperationState.inProgress,
-      ),
-    );
-    report();
-    try {
-      final hiddenRecords = _collectVaultRecords('hidden');
-      counts['hiddenNoteCount'] = hiddenRecords.length;
-      final jsonStr = _canonicalJsonEncode(hiddenRecords);
-      final checksum = sha256.convert(utf8.encode(jsonStr)).toString();
-      checksums.add(
-        ComponentChecksum(
+    if (includeHidden) {
+      components.add(
+        const ComponentProgress(
           component: BackupComponent.hiddenVault,
-          sha256: checksum,
-          byteCount: jsonStr.length,
+          state: BackupOperationState.inProgress,
         ),
       );
-      data['hiddenVault'] = hiddenRecords;
-      components[components.length - 1] = components.last.copyWith(
-        state: BackupOperationState.completed,
-        totalItems: hiddenRecords.length,
-        itemsProcessed: hiddenRecords.length,
-      );
       report();
-    } catch (e, st) {
-      components[components.length - 1] = components.last.copyWith(
-        state: BackupOperationState.failed,
-        error: e.toString(),
-      );
-      report();
-      _log('BACKUP hiddenVault ERROR: $e\n$st');
+      try {
+        final hiddenRecords = _collectVaultRecords('hidden');
+        counts['hiddenNoteCount'] = hiddenRecords.length;
+        final jsonStr = _canonicalJsonEncode(hiddenRecords);
+        final checksum = sha256.convert(utf8.encode(jsonStr)).toString();
+        checksums.add(
+          ComponentChecksum(
+            component: BackupComponent.hiddenVault,
+            sha256: checksum,
+            byteCount: jsonStr.length,
+          ),
+        );
+        data['hiddenVault'] = hiddenRecords;
+        components[components.length - 1] = components.last.copyWith(
+          state: BackupOperationState.completed,
+          totalItems: hiddenRecords.length,
+          itemsProcessed: hiddenRecords.length,
+        );
+        report();
+      } catch (e, st) {
+        components[components.length - 1] = components.last.copyWith(
+          state: BackupOperationState.failed,
+          error: e.toString(),
+        );
+        report();
+        _log('BACKUP hiddenVault ERROR: $e\n$st');
+      }
     }
 
     // ── 3. Auth bundle ───────────────────────────────────────────────────────

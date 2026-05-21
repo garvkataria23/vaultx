@@ -23,6 +23,14 @@ class MEGABackupService extends BaseCloudBackupProvider {
   final MegaSdkService _sdk = MegaSdkService.instance;
   String? _cachedEmail;
   String? lastError;
+  bool _isReconnecting = false;
+  Timer? _healthCheckTimer;
+
+  MegaConnectionState? megaConnectionState;
+
+  /// Called when auth state changes outside the normal login flow
+  /// (e.g., health checker restores a dropped connection).
+  VoidCallback? onAuthStateChanged;
 
   static const _secureStorage = FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
@@ -53,37 +61,79 @@ class MEGABackupService extends BaseCloudBackupProvider {
   String? get lastBackupAt =>
       Hive.box('vaultx_settings').get('lastMegaBackupAt') as String?;
 
+  // ── Initialization & Health Check ───────────────────────────────────────
+
+  void startHealthChecker() {
+    _healthCheckTimer?.cancel();
+    _healthCheckTimer = Timer.periodic(const Duration(seconds: 60), (_) async {
+      final email = await _secureStorage.read(key: _keyEmail);
+      if (email == null) {
+        _healthCheckTimer?.cancel();
+        return;
+      }
+
+      final loggedIn = await _sdk.isLoggedIn();
+      final ready = await _sdk.isReady();
+      
+      if (!loggedIn || !ready) {
+        debugPrint('MEGA HEALTH CHECK: Connection lost, attempting silent reconnect...');
+        await ensureAuthenticated();
+      } else {
+        debugPrint('MEGA HEALTH CHECK: Connection healthy');
+      }
+    });
+  }
+
   // ── Authentication ──────────────────────────────────────────────────────
 
   @override
   Future<String?> restoreSession() async {
-    if (_cachedEmail != null) return _cachedEmail;
+    debugPrint('MEGA INIT START');
+    if (_cachedEmail != null) {
+      startHealthChecker();
+      return _cachedEmail;
+    }
     final success = await signInSilently();
+    if (success) startHealthChecker();
     return success ? _cachedEmail : null;
   }
 
   @override
   Future<bool> ensureAuthenticated() async {
-    if (_cachedEmail != null) return true;
+    if (_isReconnecting) return false;
 
-    // Try health check first — maybe SDK is still logged in from native side
-    final loggedIn = await _sdk.isLoggedIn();
-    if (loggedIn) {
-      debugPrint('MEGA CONNECTION HEALTH: SDK reports logged in');
-      final nodesOk = await _sdk.fetchNodes();
-      if (nodesOk['success'] == true) {
-        // Fetch the email from SDK
-        final email = await _sdk.getSessionEmail();
-        if (email != null) {
-          _cachedEmail = email;
-          await _saveSession(null, email);
-          debugPrint('MEGA AUTO RECONNECTED — session restored from native');
+    _isReconnecting = true;
+    megaConnectionState = MegaConnectionState.connecting;
+    try {
+      // 1. Check if we already have an active and ready session
+      if (_cachedEmail != null) {
+        if (await _sdk.isReady()) {
+          megaConnectionState = MegaConnectionState.ready;
+          return true;
+        }
+        // Email cached but not fully ready — native side may be restoring;
+        // try silent sign-in which will queue behind any in-progress restore.
+        final ok = await signInSilently();
+        if (ok) {
+          startHealthChecker();
           return true;
         }
       }
-    }
 
-    return await signInSilently();
+      // 2. Try silent sign-in (restore session from native)
+      // The Kotlin side handles fastLogin + fetchNodes + retries internally
+      final success = await signInSilently();
+      if (success) {
+        startHealthChecker();
+        return true;
+      }
+      
+      megaConnectionState = MegaConnectionState.failed;
+      return false;
+    } finally {
+      _isReconnecting = false;
+      onAuthStateChanged?.call();
+    }
   }
 
   @override
@@ -91,31 +141,39 @@ class MEGABackupService extends BaseCloudBackupProvider {
     final email = await _secureStorage.read(key: _keyEmail);
     if (email == null) return false;
 
-    // Retry up to 3 times with 2s delay for transient failures
-    for (var attempt = 1; attempt <= 3; attempt++) {
-      if (attempt > 1) {
-        debugPrint('MEGA CONNECTION: retry $attempt/3...');
-        await Future.delayed(const Duration(seconds: 2));
-      }
+    megaConnectionState = MegaConnectionState.restoring;
+    debugPrint('SESSION RESTORE START for $email');
 
-      final result = await _sdk.restoreSession();
+    try {
+      // The Kotlin side handles fastLogin + fetchNodes + 3 retry attempts.
+      // Timeout prevents hanging if native side encounters an unrecoverable error.
+      final result = await _sdk.restoreSession().timeout(
+        const Duration(seconds: 60),
+        onTimeout: () => {'success': false, 'error': 'Restore timed out after 60s'},
+      );
+
       if (result['success'] == true) {
         _cachedEmail = email;
         lastError = null;
-        debugPrint('MEGA SESSION RESTORED for $email');
+        debugPrint('MEGA SESSION RESTORED AND READY');
+        megaConnectionState = MegaConnectionState.ready;
         return true;
       }
 
       lastError = (result['error'] as String?)?.isNotEmpty == true
           ? result['error'] as String
-          : 'MEGA NOT READY';
-      debugPrint('MEGA CONNECTION: attempt $attempt/3 failed — $lastError');
+          : 'RESTORE FAILED';
+      debugPrint('MEGA SESSION RESTORE FAILED: $lastError');
+      megaConnectionState = MegaConnectionState.failed;
+      return false;
+    } on TimeoutException {
+      lastError = 'Restore timed out after 60s';
+      debugPrint('MEGA SESSION RESTORE TIMED OUT');
+      megaConnectionState = MegaConnectionState.failed;
+      return false;
     }
-
-    // All retries exhausted — do NOT clear session, it may work later
-    debugPrint('MEGA CONNECTION LOST — all retries exhausted');
-    return false;
   }
+
 
   @override
   Future<bool> signIn() async {
@@ -126,27 +184,42 @@ class MEGABackupService extends BaseCloudBackupProvider {
 
   Future<bool> loginWithCredentials(String email, String password) async {
     lastError = null;
+    megaConnectionState = MegaConnectionState.connecting;
     final result = await _sdk.login(email, password);
     debugPrint('MEGA SDK LOGIN: success=${result['success']}');
     if (result['success'] == true) {
       _cachedEmail = email;
       await _saveSession(null, email);
       debugPrint('MEGA SESSION SAVED for $email');
+      
+      // After login, we also need to fetch nodes
+      megaConnectionState = MegaConnectionState.fetchingNodes;
+      debugPrint('FETCH NODES START');
+      await _sdk.fetchNodes();
+      megaConnectionState = MegaConnectionState.ready;
+      debugPrint('MEGA READY TRUE');
+      
+      startHealthChecker();
       return true;
     }
+    megaConnectionState = MegaConnectionState.failed;
     lastError = (result['error'] as String?)?.isNotEmpty == true
         ? result['error'] as String
         : 'MEGA NOT READY';
     return false;
   }
 
+
   @override
   Future<void> signOut() async {
+    _healthCheckTimer?.cancel();
     await _sdk.logout();
     _cachedEmail = null;
+    megaConnectionState = null;
     await _clearSession();
     debugPrint('MEGA LOGOUT completed');
   }
+
 
   Future<void> _saveSession(String? session, String email) async {
     if (session != null && session.isNotEmpty) {
@@ -188,13 +261,25 @@ class MEGABackupService extends BaseCloudBackupProvider {
     await _deleteExistingFiles(fileName);
 
     final uploadName = _cloudFileName(fileName);
-    final mapResult = await _sdk.uploadFile(bytes: bytes, fileName: uploadName);
-    if (mapResult['success'] == true) return true;
-    lastError = (mapResult['error'] as String?)?.isNotEmpty == true
-        ? mapResult['error'] as String
-        : 'UPLOAD FAILED';
-    debugPrint('MEGA SDK UPLOAD ERROR: $lastError');
-    return false;
+    
+    // Listen for progress updates for this specific file
+    final subscription = _sdk.progressStream.listen((event) {
+      if (event.fileName == uploadName) {
+        onUploadProgress?.call(event.uploaded, event.total);
+      }
+    });
+
+    try {
+      final mapResult = await _sdk.uploadFile(bytes: bytes, fileName: uploadName);
+      if (mapResult['success'] == true) return true;
+      lastError = (mapResult['error'] as String?)?.isNotEmpty == true
+          ? mapResult['error'] as String
+          : 'UPLOAD FAILED';
+      debugPrint('MEGA SDK UPLOAD ERROR: $lastError');
+      return false;
+    } finally {
+      await subscription.cancel();
+    }
   }
 
   @override
@@ -220,10 +305,12 @@ class MEGABackupService extends BaseCloudBackupProvider {
     };
     final manifestBytes = utf8.encode(jsonEncode(manifest));
     final cloudManifestName = '${cloudBaseName}_m.dat';
+    
     final manifestUpload = await _sdk.uploadFile(
       bytes: manifestBytes,
       fileName: cloudManifestName,
     );
+    
     if (manifestUpload['success'] != true) {
       lastError = (manifestUpload['error'] as String?)?.isNotEmpty == true
           ? manifestUpload['error'] as String
@@ -231,6 +318,8 @@ class MEGABackupService extends BaseCloudBackupProvider {
       debugPrint('MEGA SDK MANIFEST UPLOAD ERROR: $lastError');
       return false;
     }
+
+    var totalUploaded = 0;
 
     for (var i = 0; i < partCount; i++) {
       final start = i * BaseCloudBackupProvider.kChunkSize;
@@ -240,18 +329,34 @@ class MEGABackupService extends BaseCloudBackupProvider {
       final cloudPartName =
           '${cloudBaseName}_p${i.toString().padLeft(4, '0')}.bin';
 
-      final partUpload = await _sdk.uploadFile(
-        bytes: chunk,
-        fileName: cloudPartName,
-      );
-      if (partUpload['success'] != true) {
-        lastError = (partUpload['error'] as String?)?.isNotEmpty == true
-            ? partUpload['error'] as String
-            : 'UPLOAD FAILED';
-        debugPrint('MEGA SDK PART UPLOAD ERROR: $lastError');
-        return false;
+      // Local tracker for this chunk's progress
+      var lastChunkUploaded = 0;
+      final subscription = _sdk.progressStream.listen((event) {
+        if (event.fileName == cloudPartName) {
+          final delta = event.uploaded - lastChunkUploaded;
+          if (delta > 0) {
+            totalUploaded += delta;
+            lastChunkUploaded = event.uploaded;
+            onUploadProgress?.call(totalUploaded, bytes.length);
+          }
+        }
+      });
+
+      try {
+        final partUpload = await _sdk.uploadFile(
+          bytes: chunk,
+          fileName: cloudPartName,
+        );
+        if (partUpload['success'] != true) {
+          lastError = (partUpload['error'] as String?)?.isNotEmpty == true
+              ? partUpload['error'] as String
+              : 'UPLOAD FAILED';
+          debugPrint('MEGA SDK PART UPLOAD ERROR: $lastError');
+          return false;
+        }
+      } finally {
+        await subscription.cancel();
       }
-      onUploadProgress?.call(end, bytes.length);
     }
     return true;
   }

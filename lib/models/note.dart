@@ -119,6 +119,9 @@ class SecureNote {
     this.backupExcluded = false,
     this.deleted = false,
     this.deletedAt,
+    this.autoDeleteAt,
+    this.originalFolder,
+    this.deletedBy = 'user',
     this.viewCount = 0,
     this.lastViewedAt,
   });
@@ -149,6 +152,9 @@ class SecureNote {
   final bool backupExcluded;
   final bool deleted;
   final DateTime? deletedAt;
+  final DateTime? autoDeleteAt;
+  final String? originalFolder;
+  final String deletedBy;
   final int viewCount;
   final DateTime? lastViewedAt;
 
@@ -163,7 +169,7 @@ class SecureNote {
     return true;
   }
 
-  SecureNote markDeleted() => SecureNote(
+  SecureNote markDeleted({DateTime? autoDeleteAt}) => SecureNote(
     id: id,
     title: title,
     body: body,
@@ -190,6 +196,9 @@ class SecureNote {
     backupExcluded: backupExcluded,
     deleted: true,
     deletedAt: DateTime.now(),
+    autoDeleteAt: autoDeleteAt,
+    originalFolder: folder,
+    deletedBy: 'user',
     viewCount: viewCount,
     lastViewedAt: lastViewedAt,
   );
@@ -218,6 +227,9 @@ class SecureNote {
     bool? backupExcluded,
     bool? deleted,
     DateTime? deletedAt,
+    DateTime? autoDeleteAt,
+    String? originalFolder,
+    String? deletedBy,
     int? viewCount,
     DateTime? lastViewedAt,
   }) {
@@ -252,6 +264,9 @@ class SecureNote {
       backupExcluded: backupExcluded ?? this.backupExcluded,
       deleted: deleted ?? this.deleted,
       deletedAt: deletedAt ?? this.deletedAt,
+      autoDeleteAt: autoDeleteAt ?? this.autoDeleteAt,
+      originalFolder: originalFolder ?? this.originalFolder,
+      deletedBy: deletedBy ?? this.deletedBy,
       viewCount: viewCount ?? this.viewCount,
       lastViewedAt: lastViewedAt ?? this.lastViewedAt,
     );
@@ -284,6 +299,9 @@ class SecureNote {
     'backupExcluded': backupExcluded,
     'deleted': deleted,
     'deletedAt': deletedAt?.toIso8601String(),
+    'autoDeleteAt': autoDeleteAt?.toIso8601String(),
+    'originalFolder': originalFolder,
+    'deletedBy': deletedBy,
     'viewCount': viewCount,
     'lastViewedAt': lastViewedAt?.toIso8601String(),
   };
@@ -354,6 +372,11 @@ class SecureNote {
     deletedAt: json['deletedAt'] != null
         ? DateTime.tryParse(json['deletedAt'] as String? ?? '')
         : null,
+    autoDeleteAt: json['autoDeleteAt'] != null
+        ? DateTime.tryParse(json['autoDeleteAt'] as String? ?? '')
+        : null,
+    originalFolder: json['originalFolder'] as String?,
+    deletedBy: json['deletedBy'] as String? ?? 'user',
     viewCount: json['viewCount'] as int? ?? 0,
     lastViewedAt: json['lastViewedAt'] != null
         ? DateTime.tryParse(json['lastViewedAt'] as String? ?? '')

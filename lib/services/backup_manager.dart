@@ -61,10 +61,19 @@ class BackupManager extends ChangeNotifier {
           authService: authService,
         );
       case CloudProvider.mega:
-        return MEGABackupService(
+        final svc = MEGABackupService(
           masterKey: masterKey,
           authService: authService,
         );
+        svc.onAuthStateChanged = () {
+          _updateState(CloudProvider.mega,
+            megaState: svc.megaConnectionState,
+            connected: svc.isAuthenticated,
+            email: svc.signedInEmail,
+          );
+          notifyListeners();
+        };
+        return svc;
     }
   }
 
@@ -75,10 +84,13 @@ class BackupManager extends ChangeNotifier {
       if (!state.enabled) continue;
 
       try {
+        _updateState(type, isReconnecting: true);
+        notifyListeners();
+        
         final email = await provider.restoreSession();
-        _updateState(type, connected: email != null, email: email);
+        _updateState(type, connected: email != null, email: email, isReconnecting: false, megaState: email != null ? MegaConnectionState.ready : MegaConnectionState.failed);
       } catch (_) {
-        _updateState(type, connected: false);
+        _updateState(type, connected: false, isReconnecting: false, megaState: MegaConnectionState.failed);
       }
     }
     notifyListeners();
@@ -133,10 +145,16 @@ class BackupManager extends ChangeNotifier {
     if (enabled) {
       final provider = _providers[type]!;
       try {
-        final email = await provider.restoreSession();
-        _updateState(type, connected: email != null, email: email);
+        _updateState(type, isReconnecting: true);
         notifyListeners();
-      } catch (_) {}
+        
+        final email = await provider.restoreSession();
+        _updateState(type, connected: email != null, email: email, isReconnecting: false);
+        notifyListeners();
+      } catch (_) {
+        _updateState(type, connected: false, isReconnecting: false);
+        notifyListeners();
+      }
     }
   }
 
@@ -268,11 +286,23 @@ class BackupManager extends ChangeNotifier {
         );
       };
 
+      _updateState(type, uploadPhase: 'Collecting data...');
       final ok = await provider.uploadBackup(
         ({bool compressMedia = false}) async {
           final result = await backupService.createBackup(
             compressMedia: compressMedia,
           );
+          
+          final manifest = result.manifest;
+          final counts = manifest.counts;
+          debugPrint('BACKUP_MANAGER: Collected items for $type:');
+          debugPrint(' - Main Notes: ${counts['mainNoteCount'] ?? 0}');
+          debugPrint(' - Hidden Notes: ${counts['hiddenNoteCount'] ?? 0}');
+          debugPrint(' - Drive Files: ${counts['driveFileCount'] ?? 0}');
+          debugPrint(' - Attachments: ${counts['attachmentBlobCount'] ?? 0}');
+          debugPrint(' - Password Entries: ${counts['passwordEntryCount'] ?? 0}');
+          debugPrint(' - Total Size: ${(manifest.totalSizeBytes / 1024 / 1024).toStringAsFixed(2)} MB');
+          
           return result.data;
         },
         verificationService: verificationService ?? backupService,
@@ -284,6 +314,7 @@ class BackupManager extends ChangeNotifier {
       );
 
       if (ok) {
+        debugPrint('BACKUP_MANAGER: Upload and verification successful for $type');
         // Refresh storage info after successful backup
         _refreshStorageInfo(type);
         _updateState(type,
@@ -405,6 +436,7 @@ class BackupManager extends ChangeNotifier {
       _updateState(CloudProvider.mega,
         connected: true,
         email: provider.signedInEmail,
+        megaState: MegaConnectionState.ready,
         error: null,
       );
       notifyListeners();
@@ -426,15 +458,24 @@ class BackupManager extends ChangeNotifier {
     String? lastBackupAt,
     bool? uploading,
     bool? restoring,
+    bool? isReconnecting,
     String? error,
     double? uploadProgress,
     String? uploadPhase,
     int? uploadedBytes,
     int? totalBytes,
+    MegaConnectionState? megaState,
     bool clearError = false,
   }) {
     final current = _states[type];
     if (current == null) return;
+
+    // Don't auto-read from provider: the health checker can change
+    // megaConnectionState outside of BackupManager's awareness, which
+    // would then overwrite megaState on the next _updateState call.
+    // megaState is only set when explicitly passed.
+    final MegaConnectionState? actualMegaState = megaState ?? current.megaState;
+
     _states[type] = current.copyWith(
       enabled: enabled,
       connected: connected,
@@ -442,12 +483,16 @@ class BackupManager extends ChangeNotifier {
       lastBackupAt: lastBackupAt,
       uploading: uploading,
       restoring: restoring,
+      isReconnecting: isReconnecting,
       error: error,
       uploadProgress: uploadProgress,
       uploadPhase: uploadPhase,
       uploadedBytes: uploadedBytes,
       totalBytes: totalBytes,
+      megaState: actualMegaState,
       clearError: clearError,
     );
+
   }
+
 }

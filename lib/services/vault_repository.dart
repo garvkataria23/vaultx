@@ -287,23 +287,29 @@ class VaultRepository {
   }
 
   Future<void> moveToTrash(SecureNote note) async {
-    final trashedNote = note.copyWith(
-      deleted: true,
-      deletedAt: DateTime.now(),
-      pinned: false,
-      favorite: false,
-    );
+    final settingsBox = Hive.box('vaultx_settings');
+    final retentionDays = settingsBox.get('trashRetentionDays', defaultValue: 30) as int;
+    
+    if (retentionDays == 0) {
+      await permanentlyDeleteNote(note);
+      return;
+    }
+
+    DateTime? autoDeleteAt = DateTime.now().add(Duration(days: retentionDays));
+
+    final trashedNote = note.markDeleted(autoDeleteAt: autoDeleteAt);
     await save(trashedNote);
-    await AuditLog.write('Note moved to trash: ${note.id}');
+    await AuditLog.write('ITEM MOVED TO TRASH: ${note.title} (${note.id})');
   }
 
   Future<void> restoreNote(SecureNote note) async {
     final restoredNote = note.copyWith(
       deleted: false,
       deletedAt: null,
+      autoDeleteAt: null,
     );
     await save(restoredNote);
-    await AuditLog.write('Note restored from trash: ${note.id}');
+    await AuditLog.write('ITEM RESTORED: ${note.title} (${note.id})');
   }
 
   Future<void> permanentlyDeleteNote(SecureNote note) async {
@@ -311,7 +317,7 @@ class VaultRepository {
       await EncryptedBlobService.secureDeletePath(attachment.encryptedPath);
     }
     await _deletePermanently(note.id);
-    await AuditLog.write('Note permanently deleted: ${note.id}');
+    await AuditLog.write('ITEM PERMANENTLY DELETED: ${note.title} (${note.id})');
   }
 
   Future<void> emptyTrash() async {
@@ -491,11 +497,12 @@ class EncryptedBlobService {
 
   static Future<void> cleanupTempExports() async {
     try {
-      final dir = Directory(
-        '${(await getTemporaryDirectory()).path}/vaultx_exports',
-      );
-      if (await dir.exists()) {
-        await dir.delete(recursive: true);
+      final tempPath = (await getTemporaryDirectory()).path;
+      for (final name in ['vaultx_exports', 'VaultX_Exports']) {
+        final dir = Directory('$tempPath/$name');
+        if (await dir.exists()) {
+          await dir.delete(recursive: true);
+        }
       }
     } catch (_) {}
   }

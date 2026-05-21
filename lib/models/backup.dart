@@ -78,6 +78,15 @@ enum CloudProvider {
   }
 }
 
+/// Detailed connection stages for MEGA.
+enum MegaConnectionState {
+  connecting,
+  restoring,
+  fetchingNodes,
+  ready,
+  failed,
+}
+
 /// Per-provider operational state used by [BackupManager].
 class ProviderState {
   final CloudProvider provider;
@@ -87,11 +96,13 @@ class ProviderState {
   final String? lastBackupAt;
   final bool uploading;
   final bool restoring;
+  final bool isReconnecting;
   final String? error;
   final double uploadProgress;
   final String? uploadPhase;
   final int uploadedBytes;
   final int totalBytes;
+  final MegaConnectionState? megaState;
 
   const ProviderState({
     required this.provider,
@@ -101,11 +112,13 @@ class ProviderState {
     this.lastBackupAt,
     this.uploading = false,
     this.restoring = false,
+    this.isReconnecting = false,
     this.error,
     this.uploadProgress = 0.0,
     this.uploadPhase,
     this.uploadedBytes = 0,
     this.totalBytes = 0,
+    this.megaState,
   });
 
   ProviderState copyWith({
@@ -116,11 +129,13 @@ class ProviderState {
     String? lastBackupAt,
     bool? uploading,
     bool? restoring,
+    bool? isReconnecting,
     String? error,
     double? uploadProgress,
     String? uploadPhase,
     int? uploadedBytes,
     int? totalBytes,
+    MegaConnectionState? megaState,
     bool clearError = false,
   }) =>
       ProviderState(
@@ -131,13 +146,16 @@ class ProviderState {
         lastBackupAt: lastBackupAt ?? this.lastBackupAt,
         uploading: uploading ?? this.uploading,
         restoring: restoring ?? this.restoring,
+        isReconnecting: isReconnecting ?? this.isReconnecting,
         error: clearError ? null : (error ?? this.error),
         uploadProgress: uploadProgress ?? this.uploadProgress,
         uploadPhase: uploadPhase ?? this.uploadPhase,
         uploadedBytes: uploadedBytes ?? this.uploadedBytes,
         totalBytes: totalBytes ?? this.totalBytes,
+        megaState: megaState ?? this.megaState,
       );
 }
+
 
 /// Storage quota info for a cloud provider.
 class StorageInfo {
