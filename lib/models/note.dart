@@ -124,6 +124,7 @@ class SecureNote {
     this.deletedBy = 'user',
     this.viewCount = 0,
     this.lastViewedAt,
+    this.lastOpenedAt,
   });
 
   final String id;
@@ -157,6 +158,7 @@ class SecureNote {
   final String deletedBy;
   final int viewCount;
   final DateTime? lastViewedAt;
+  final DateTime? lastOpenedAt;
 
   bool get isLocalOnly => backupExcluded;
 
@@ -232,6 +234,7 @@ class SecureNote {
     String? deletedBy,
     int? viewCount,
     DateTime? lastViewedAt,
+    DateTime? lastOpenedAt,
   }) {
     return SecureNote(
       id: id,
@@ -269,6 +272,7 @@ class SecureNote {
       deletedBy: deletedBy ?? this.deletedBy,
       viewCount: viewCount ?? this.viewCount,
       lastViewedAt: lastViewedAt ?? this.lastViewedAt,
+      lastOpenedAt: lastOpenedAt ?? this.lastOpenedAt,
     );
   }
 
@@ -304,6 +308,7 @@ class SecureNote {
     'deletedBy': deletedBy,
     'viewCount': viewCount,
     'lastViewedAt': lastViewedAt?.toIso8601String(),
+    'lastOpenedAt': lastOpenedAt?.toIso8601String(),
   };
 
   static NoteType _parseNoteType(String? raw) {
@@ -380,6 +385,9 @@ class SecureNote {
     viewCount: json['viewCount'] as int? ?? 0,
     lastViewedAt: json['lastViewedAt'] != null
         ? DateTime.tryParse(json['lastViewedAt'] as String? ?? '')
+        : null,
+    lastOpenedAt: json['lastOpenedAt'] != null
+        ? DateTime.tryParse(json['lastOpenedAt'] as String? ?? '')
         : null,
   );
 }

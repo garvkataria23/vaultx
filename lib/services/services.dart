@@ -57,3 +57,5 @@ export 'transcription_service.dart' show TranscriptionService;
 export 'share_package_service.dart' show SharePackageService;
 export 'summarization_service.dart' show SummarizationService;
 export 'trash_service.dart' show TrashService, TrashItem;
+export 'navigation_service.dart' show NavigationService;
+

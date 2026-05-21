@@ -600,25 +600,16 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
 
   Future<void> _openEditor([SecureNote? note]) async {
     final navigator = Navigator.of(context);
+    
     if (note != null) {
-      final updated = note.copyWith(
-        viewCount: note.viewCount + 1,
-        lastViewedAt: DateTime.now(),
-      );
-      if (widget.authResult.kind != VaultKind.decoy) {
-        await _repo?.save(updated);
-      } else {
-        await DecoySeedService.saveNote(updated);
-      }
-      
-      await navigator.push(
-        MaterialPageRoute(
-          builder: (_) => NoteEditor(
-            note: updated,
-            blobs: _blobs,
-            onAutoSave: (edited) => _saveNote(edited, updated),
-          ),
-        ),
+      await NavigationService.openNote(
+        context: context,
+        note: note,
+        repo: _repo,
+        blobs: _blobs,
+        allNotes: _notes,
+        isDecoy: widget.authResult.kind == VaultKind.decoy,
+        onSave: (edited) => _saveNote(edited, note),
       );
     } else {
       await navigator.push(
@@ -626,11 +617,14 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
           builder: (_) => NoteEditor(
             note: null,
             blobs: _blobs,
+            allNotes: _notes,
             onAutoSave: (edited) => _saveNote(edited, null),
           ),
         ),
       );
     }
+    
+    // Refresh the vault notes tab
     if (mounted) await _load();
   }
 

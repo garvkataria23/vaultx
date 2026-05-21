@@ -340,6 +340,7 @@ class _NoteEditorState extends State<NoteEditor> {
             .where((e) => e.isNotEmpty)
             .toList(),
         ocrText: _ocrText.text,
+        lastOpenedAt: DateTime.now(), // Ensure note opening/editing updates history
       );
 
       await widget.onAutoSave!(updatedNote);

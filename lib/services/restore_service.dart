@@ -50,6 +50,21 @@ class RestoreService {
 
   BackupVersion? _detectedVersion;
 
+  String get _providerTag => driveService.providerName == 'Google Drive' ? 'GOOGLE' : 'MEGA';
+
+  void _logProvider(String msg) => debugPrint('[$_providerTag RESTORE] $msg');
+  void _logProviderError(String msg) => debugPrint('[$_providerTag RESTORE ERROR] $msg');
+
+  /// Estimate the total byte size of the downloaded backup map.
+  int _estimateDataSize(Map<String, dynamic> data) {
+    try {
+      final json = jsonEncode(data);
+      return json.length;
+    } catch (_) {
+      return -1;
+    }
+  }
+
   void _report(RestoreProgress progress) {
     onProgress?.call(progress);
   }
@@ -68,6 +83,7 @@ class RestoreService {
     try {
       final hasBackup = await driveService.hasBackup();
       if (!hasBackup) {
+        _logProvider('No backup found');
         debugPrint('RESTORE DETECT: no backup found on Drive');
         _report(const RestoreProgress(
           stage: RestoreStage.detecting,
@@ -78,7 +94,9 @@ class RestoreService {
       }
 
       final versions = await driveService.listBackups();
+      _logProvider('Backups found=${versions.length}');
       if (versions.isEmpty) {
+        _logProviderError('listBackups returned empty');
         debugPrint('RESTORE DETECT: listBackups returned empty');
         _report(const RestoreProgress(
           stage: RestoreStage.detecting,
@@ -89,6 +107,7 @@ class RestoreService {
       }
 
       _detectedVersion = versions.first;
+      _logProvider('Backup selected=file=${_detectedVersion!.fileName} size=${_detectedVersion!.totalSizeBytes}B date=${_detectedVersion!.label}');
       debugPrint('RESTORE DETECT: found backup from ${_detectedVersion!.label}');
       _report(const RestoreProgress(
         stage: RestoreStage.detecting,
@@ -97,6 +116,7 @@ class RestoreService {
       ));
       return _detectedVersion;
     } catch (e, st) {
+      _logProviderError('Backup detection failed: $e');
       debugPrint('RESTORE DETECT ERROR: $e\n$st');
       _report(RestoreProgress(
         stage: RestoreStage.failed,
@@ -128,6 +148,7 @@ class RestoreService {
       // ── 1. Download ────────────────────────────────────────────────────────
       final data = await driveService.downloadVersion(version);
       if (data == null) {
+        _logProviderError('Download failed');
         _report(const RestoreProgress(
           stage: RestoreStage.failed,
           error: 'Failed to download backup. Check your internet connection.',
@@ -135,13 +156,16 @@ class RestoreService {
         return null;
       }
 
+      final approxBytes = _estimateDataSize(data);
+      _logProvider('Download bytes=$approxBytes');
+
       _report(const RestoreProgress(
         stage: RestoreStage.downloading,
         fraction: 1.0,
         componentName: 'Downloaded',
       ));
 
-      // ── 2. Verify password & extract master key ────────────────────────────
+      // ── 2. Verify password & extract master key (AES decrypt) ──────────────
       _report(const RestoreProgress(
         stage: RestoreStage.decrypting,
         fraction: 0.0,
@@ -150,6 +174,7 @@ class RestoreService {
 
       final masterKey = await _verifyPassword(data, password);
       if (masterKey == null) {
+        _logProviderError('AES decrypt failed (wrong password)');
         _report(const RestoreProgress(
           stage: RestoreStage.failed,
           error: 'Wrong vault password. Restore requires the same password used to create the backup.',
@@ -157,13 +182,15 @@ class RestoreService {
         return null;
       }
 
+      _logProvider('AES decrypt=success');
+
       _report(const RestoreProgress(
         stage: RestoreStage.decrypting,
         fraction: 1.0,
         componentName: 'Password verified',
       ));
 
-      // ── 3. Validate integrity ──────────────────────────────────────────────
+      // ── 3. Validate integrity (SHA verify) ─────────────────────────────────
       _report(const RestoreProgress(
         stage: RestoreStage.verifying,
         fraction: 0.0,
@@ -197,6 +224,8 @@ class RestoreService {
       } else {
         warnings.addAll(verifyResult.warnings);
       }
+
+      _logProvider('SHA verify=${integrityError == null ? "passed" : "FAILED: $integrityError"}');
 
       _report(RestoreProgress(
         stage: RestoreStage.verifying,
@@ -301,6 +330,9 @@ class RestoreService {
       );
 
       if (result.success) {
+        _logProvider('Hive restore=success (main=${result.mainNotesRestored}, hidden=${result.hiddenNotesRestored}, passwords=${result.passwordEntriesRestored}, drive=${result.driveFilesRestored}, settings=${result.settingsRestored})');
+        _logProvider('Blob restore=success (driveBlobs=${result.driveBlobsRestored}, attachments=${result.attachmentBlobsRestored})');
+
         _report(const RestoreProgress(
           stage: RestoreStage.rebuildingIndexes,
           fraction: 0.5,
@@ -311,6 +343,8 @@ class RestoreService {
         await _rebuildIndexes();
         debugPrint('PROVIDER REBUILD: restore service cache rebuild complete');
 
+        _logProvider('Verification=passed');
+
         _report(const RestoreProgress(
           stage: RestoreStage.completed,
           fraction: 1.0,
@@ -318,8 +352,9 @@ class RestoreService {
         ));
         debugPrint('UI REFRESH COMPLETE: restore completed and listeners notified');
 
-        await AuditLog.write('Cross-device restore completed: ${result.summary}');
+        await AuditLog.write('$_providerTag restore completed: ${result.summary}');
       } else {
+        _logProviderError('Restore failed: ${result.error}');
         _report(RestoreProgress(
           stage: RestoreStage.failed,
           error: result.error ?? 'Restore failed',
@@ -328,6 +363,7 @@ class RestoreService {
 
       return result;
     } catch (e, st) {
+      _logProviderError('Commit exception: $e');
       debugPrint('RESTORE COMMIT ERROR: $e\n$st');
       _report(RestoreProgress(
         stage: RestoreStage.failed,

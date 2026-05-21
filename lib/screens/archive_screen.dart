@@ -121,6 +121,7 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
     final updated = note.copyWith(
       viewCount: note.viewCount + 1,
       lastViewedAt: DateTime.now(),
+      lastOpenedAt: DateTime.now(),
     );
     await widget.repo.save(updated);
 

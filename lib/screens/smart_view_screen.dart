@@ -11,11 +11,9 @@ enum SmartCategory {
   frequentlyOpened('Frequently Opened', Icons.bolt, 'Your most accessed notes'),
   large('Large Notes', Icons.storage, 'Notes with significant content or attachments'),
   unread('Unread Notes', Icons.mark_as_unread, 'Notes you haven\'t opened recently'),
-  recentlyEdited('Recently Edited', Icons.edit_note, 'Notes changed in the last 48 hours'),
   today('Today', Icons.today, 'Created or updated today'),
   thisWeek('This Week', Icons.calendar_view_week, 'Created or updated this week'),
-  media('Media Notes', Icons.perm_media, 'Notes with images, voice, or drawings'),
-  hiddenVault('Hidden Smart View', Icons.visibility_off, 'Insights from your hidden vault');
+  media('Media Notes', Icons.perm_media, 'Notes with images, voice, or drawings');
 
   final String label;
   final IconData icon;
@@ -68,8 +66,8 @@ class _SmartViewScreenState extends State<SmartViewScreen> {
     switch (category) {
       case SmartCategory.recent:
         return notes..sort((a, b) {
-          final timeA = a.lastViewedAt ?? a.updatedAt;
-          final timeB = b.lastViewedAt ?? b.updatedAt;
+          final timeA = a.lastOpenedAt ?? a.updatedAt;
+          final timeB = b.lastOpenedAt ?? b.updatedAt;
           return timeB.compareTo(timeA);
         });
       case SmartCategory.pinned:
@@ -88,10 +86,6 @@ class _SmartViewScreenState extends State<SmartViewScreen> {
       case SmartCategory.unread:
         // We consider unread if viewCount is 0
         return notes.where((n) => n.viewCount == 0).toList();
-      case SmartCategory.recentlyEdited:
-        final fortyEightHoursAgo = now.subtract(const Duration(hours: 48));
-        return notes.where((n) => n.updatedAt.isAfter(fortyEightHoursAgo)).toList()
-          ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
       case SmartCategory.today:
         return notes.where((n) => 
           (n.createdAt.year == now.year && n.createdAt.month == now.month && n.createdAt.day == now.day) ||
@@ -102,37 +96,21 @@ class _SmartViewScreenState extends State<SmartViewScreen> {
         return notes.where((n) => n.updatedAt.isAfter(weekAgo) || n.createdAt.isAfter(weekAgo)).toList();
       case SmartCategory.media:
         return notes.where((n) => n.attachments.isNotEmpty || n.type != NoteType.text).toList();
-      case SmartCategory.hiddenVault:
-        // This is just a placeholder if we're already in hidden vault or showing insights
-        return notes.where((n) => n.folder.toLowerCase().contains('hidden') || n.locked).toList();
     }
   }
 
-  Future<void> _openEditor(SecureNote note) async {
-    // Increment view count
-    final updated = note.copyWith(
-      viewCount: note.viewCount + 1,
-      lastViewedAt: DateTime.now(),
-    );
-    
-    if (widget.repo != null) {
-      await widget.repo!.save(updated);
-    }
-
-    if (!mounted) return;
-
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => NoteEditor(
-          note: updated,
-          blobs: widget.blobs,
-          onAutoSave: (edited) async {
-            if (widget.repo != null) {
-              await widget.repo!.save(edited);
-            }
-          },
-        ),
-      ),
+  Future<void> _openNote(SecureNote note) async {
+    await NavigationService.openNote(
+      context: context,
+      note: note,
+      repo: widget.repo,
+      blobs: widget.blobs,
+      allNotes: widget.notes,
+      onSave: (edited) async {
+        if (widget.repo != null) {
+          await widget.repo!.save(edited);
+        }
+      },
     );
     
     // Refresh the list if we return
@@ -144,54 +122,68 @@ class _SmartViewScreenState extends State<SmartViewScreen> {
     final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Smart View'),
-        actions: [
-          IconButton(
-            icon: Icon(noteViewIcons[_viewMode]),
-            onPressed: () {
-              setState(() {
-                _viewMode = _viewMode == NoteViewMode.grid ? NoteViewMode.list : NoteViewMode.grid;
-              });
-            },
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          _buildCategorySelector(cs),
-          const Divider(height: 1),
-          Expanded(
-            child: _filteredNotes.isEmpty
-                ? _buildEmptyState()
-                : NoteViewsRenderer(
-                    mode: _viewMode,
-                    notes: _filteredNotes,
-                    blobs: widget.blobs,
-                    onTap: _openEditor,
-                    onToggleFavorite: (n) async {
-                      if (widget.repo != null) {
-                        await widget.repo!.save(n.copyWith(favorite: !n.favorite));
-                        _selectCategory(_selectedCategory!);
-                      }
-                    },
-                    onTogglePin: (n) async {
-                      if (widget.repo != null) {
-                        await widget.repo!.save(n.copyWith(pinned: !n.pinned));
-                        _selectCategory(_selectedCategory!);
-                      }
-                    },
-                    categories: const {}, // Default empty
-                    hasMore: false,
-                    onLoadMore: () {},
-                    onDelete: (n) {},
-                    onToggleArchive: (n) {},
-                    onToggleLock: (n) {},
-                    onShare: (n) {},
-                    onMove: (n) {},
+      body: SafeArea(
+        bottom: true,
+        child: Column(
+          children: [
+            AppBar(
+              title: const Text('Smart View'),
+              actions: [
+                IconButton(
+                  icon: Icon(noteViewIcons[_viewMode]),
+                  onPressed: () {
+                    setState(() {
+                      _viewMode = _viewMode == NoteViewMode.grid ? NoteViewMode.list : NoteViewMode.grid;
+                    });
+                  },
+                ),
+              ],
+            ),
+            Expanded(
+              child: Column(
+                children: [
+                  _buildCategorySelector(cs),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: NoteViewsRenderer(
+                      mode: _viewMode,
+                      notes: _filteredNotes,
+                      blobs: widget.blobs,
+                      onTap: _openNote,
+                      onToggleFavorite: (n) async {
+                        if (widget.repo != null) {
+                          await widget.repo!.save(n.copyWith(favorite: !n.favorite));
+                          _selectCategory(_selectedCategory!);
+                        }
+                      },
+                      onTogglePin: (n) async {
+                        if (widget.repo != null) {
+                          await widget.repo!.save(n.copyWith(pinned: !n.pinned));
+                          _selectCategory(_selectedCategory!);
+                        }
+                      },
+                      categories: const {}, // Default empty
+                      hasMore: false,
+                      onLoadMore: () {},
+                      onDelete: (n) {},
+                      onToggleArchive: (n) {},
+                      onToggleLock: (n) {},
+                      onShare: (n) {},
+                      onMove: (n) {},
+                      // Add padding to handle navigation bar
+                      padding: EdgeInsets.fromLTRB(
+                        16,
+                        16,
+                        16,
+                        MediaQuery.of(context).viewPadding.bottom + 64,
+                      ),
+                    ),
                   ),
-          ),
-        ],
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

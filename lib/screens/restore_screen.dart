@@ -78,6 +78,10 @@ class _RestoreScreenState extends State<RestoreScreen> {
     super.dispose();
   }
 
+  String get _providerTag => widget.driveService.providerName == 'Google Drive' ? 'GOOGLE' : 'MEGA';
+
+  void _logUI(String msg) => debugPrint('[$_providerTag RESTORE UI] $msg');
+
   void _onProgress(RestoreProgress progress) {
     if (mounted) setState(() => _progress = progress);
   }
@@ -86,7 +90,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
 
   Future<void> _detectBackup() async {
     if (_busy) return;
-    debugPrint('RESTORE UI: _detectBackup started');
+    _logUI('_detectBackup started');
     setState(() {
       _view = _RestoreView.detecting;
       _error = null;
@@ -99,6 +103,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
       if (!mounted) return;
 
       if (version == null) {
+        _logUI('no backup found');
         debugPrint('RESTORE UI: no backup found on Drive');
         setState(() {
           _view = _RestoreView.noBackup;
@@ -107,8 +112,8 @@ class _RestoreScreenState extends State<RestoreScreen> {
         return;
       }
 
-      debugPrint(
-        'RESTORE UI: backup detected — file=${version.fileName} size=${version.totalSizeBytes}B',
+      _logUI(
+        'backup detected — file=${version.fileName} size=${version.totalSizeBytes}B',
       );
 
       // Check if local data exists (for conflict detection)
@@ -116,7 +121,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
 
       if (!mounted) return;
 
-      debugPrint('RESTORE UI: hasLocalData=$hasLocalData');
+      _logUI('hasLocalData=$hasLocalData');
 
       setState(() {
         _detectedVersion = version;
@@ -143,9 +148,9 @@ class _RestoreScreenState extends State<RestoreScreen> {
   }
 
   Future<void> _startRestore() async {
-    debugPrint('RESTORE UI: _startRestore called — busy=$_busy');
+    _logUI('_startRestore called — busy=$_busy');
     if (_busy) {
-      debugPrint('RESTORE UI: _startRestore blocked — busy flag is true');
+      _logUI('_startRestore blocked — busy flag is true');
       return;
     }
 
@@ -155,9 +160,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
     }
 
     if (_detectedVersion == null) {
-      debugPrint(
-        'RESTORE UI: _startRestore blocked — _detectedVersion is null',
-      );
+      _logUI('_startRestore blocked — _detectedVersion is null');
       if (mounted) setState(() => _error = 'No backup version detected. Go back and retry.');
       return;
     }
@@ -192,14 +195,12 @@ class _RestoreScreenState extends State<RestoreScreen> {
       );
 
       if (!mounted) {
-        debugPrint('RESTORE UI: widget unmounted during prepareRestore');
+        _logUI('widget unmounted during prepareRestore');
         return;
       }
 
       if (info == null) {
-        debugPrint(
-          'RESTORE UI: prepareRestore returned null — likely wrong password or download failure',
-        );
+        _logUI('prepareRestore returned null — likely wrong password or download failure');
         setState(() {
           _view = _RestoreView.password;
           _error =
@@ -210,7 +211,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
       }
 
       if (info.error != null) {
-        debugPrint('RESTORE UI: prepareRestore returned error: ${info.error}');
+        _logUI('prepareRestore returned error: ${info.error}');
         setState(() {
           _view = _RestoreView.password;
           _error = info.error;
@@ -219,8 +220,8 @@ class _RestoreScreenState extends State<RestoreScreen> {
         return;
       }
 
-      debugPrint(
-        'RESTORE UI: prepareRestore success — '
+      _logUI(
+        'prepareRestore success — '
         'notes=${info.mainNoteCount} hidden=${info.hiddenNoteCount} '
         'drive=${info.driveFileCount} passwords=${info.passwordEntryCount}',
       );
@@ -239,11 +240,10 @@ class _RestoreScreenState extends State<RestoreScreen> {
       }
 
       // No local data — proceed directly with replace mode
-      debugPrint(
-        'RESTORE UI: no local data conflict — proceeding with replace mode',
-      );
+      _logUI('no local data conflict — proceeding with replace mode');
       await _commitRestore(RestoreMode.replace);
     } catch (e, st) {
+      _logUI('_startRestore EXCEPTION: $e');
       debugPrint('RESTORE UI: _startRestore EXCEPTION: $e\n$st');
       if (mounted) {
         setState(() {
@@ -256,16 +256,16 @@ class _RestoreScreenState extends State<RestoreScreen> {
   }
 
   Future<void> _commitRestore(RestoreMode mode) async {
-    debugPrint(
-      'RESTORE UI: _commitRestore called — mode=$mode committing=$_committing restoreInfo=${_restoreInfo != null}',
+    _logUI(
+      '_commitRestore called — mode=$mode committing=$_committing restoreInfo=${_restoreInfo != null}',
     );
 
     if (_restoreInfo == null) {
-      debugPrint('RESTORE UI: _commitRestore aborted — restoreInfo is null');
+      _logUI('_commitRestore aborted — restoreInfo is null');
       return;
     }
     if (_committing) {
-      debugPrint('RESTORE UI: _commitRestore aborted — already committing');
+      _logUI('_commitRestore aborted — already committing');
       return;
     }
 
@@ -280,7 +280,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
     }
 
     try {
-      debugPrint('RESTORE UI: calling commitRestore...');
+      _logUI('calling commitRestore...');
 
       final result = await _restoreService.commitRestore(
         _restoreInfo!,
@@ -288,13 +288,11 @@ class _RestoreScreenState extends State<RestoreScreen> {
       );
 
       if (!mounted) {
-        debugPrint('RESTORE UI: widget unmounted during commitRestore');
+        _logUI('widget unmounted during commitRestore');
         return;
       }
 
-      debugPrint(
-        'RESTORE UI: commitRestore result — success=${result.success} error=${result.error}',
-      );
+      _logUI('commitRestore result — success=${result.success} error=${result.error}');
 
       if (result.success) {
         setState(() {
@@ -308,6 +306,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
         );
         widget.onComplete?.call(true);
       } else {
+        _logUI('restore FAILED: ${result.error}');
         final errorMsg = result.error?.isNotEmpty == true
             ? result.error!
             : 'Restore failed for an unknown reason. Please try again.';
@@ -319,6 +318,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
         widget.onComplete?.call(false);
       }
     } catch (e, st) {
+      _logUI('_commitRestore EXCEPTION: $e');
       debugPrint('RESTORE UI: _commitRestore EXCEPTION: $e\n$st');
       if (mounted) {
         setState(() {
@@ -329,18 +329,17 @@ class _RestoreScreenState extends State<RestoreScreen> {
         widget.onComplete?.call(false);
       }
     } finally {
-      // Always reset _committing so the user can retry.
       if (mounted) {
         setState(() {
           _committing = false;
         });
       }
-      debugPrint('RESTORE UI: _committing reset to false');
+      _logUI('_committing reset to false');
     }
   }
 
   void _cancel() {
-    debugPrint('RESTORE UI: _cancel called');
+    _logUI('_cancel called');
     if (_restoreInfo != null) {
       _restoreService.cancelRestore(_restoreInfo!);
     }
@@ -348,12 +347,12 @@ class _RestoreScreenState extends State<RestoreScreen> {
   }
 
   void _skip() {
-    debugPrint('RESTORE UI: _skip called');
+    _logUI('_skip called');
     if (mounted) Navigator.of(context).pop('skip');
   }
 
   void _later() {
-    debugPrint('RESTORE UI: _later called');
+    _logUI('_later called');
     if (mounted) Navigator.of(context).pop('later');
   }
 
