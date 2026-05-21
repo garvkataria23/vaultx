@@ -91,7 +91,7 @@ class _SearchFiltersBarState extends State<SearchFiltersBar>
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const SizedBox(height: 8),
+          const SizedBox(height: 2),
           SizedBox(
             height: 40,
             child: ListView(

@@ -471,7 +471,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
     }
 
     return ListView(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
       children: [
         Icon(Icons.restore_page, size: 56, color: cs.primary),
         const SizedBox(height: 16),
@@ -526,7 +526,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
     }
 
     return ListView(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
       children: [
         Icon(Icons.lock_outline, size: 48, color: cs.primary),
         const SizedBox(height: 16),
@@ -610,7 +610,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
     final done = stage == RestoreStage.completed;
 
     return Padding(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
@@ -755,7 +755,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
     final info = _restoreInfo;
     if (info == null) return const Center(child: Text('No restore info available'));
     return ListView(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
       children: [
         const Icon(Icons.warning_amber_rounded, size: 48, color: Colors.orange),
         const SizedBox(height: 16),

@@ -100,7 +100,15 @@ class MEGABackupService extends BaseCloudBackupProvider {
 
   @override
   Future<bool> ensureAuthenticated() async {
-    if (_isReconnecting) return false;
+    if (_isReconnecting) {
+       // Wait for in-progress reconnection if it's already active
+       var timeout = 0;
+       while (_isReconnecting && timeout < 30) {
+         await Future.delayed(const Duration(seconds: 1));
+         timeout++;
+       }
+       return _cachedEmail != null && await _sdk.isReady();
+    }
 
     _isReconnecting = true;
     megaConnectionState = MegaConnectionState.connecting;
@@ -141,6 +149,16 @@ class MEGABackupService extends BaseCloudBackupProvider {
     final email = await _secureStorage.read(key: _keyEmail);
     if (email == null) return false;
 
+    // Use a guard to prevent multiple concurrent restoration attempts
+    if (megaConnectionState == MegaConnectionState.restoring) {
+       var timeout = 0;
+       while (megaConnectionState == MegaConnectionState.restoring && timeout < 60) {
+          await Future.delayed(const Duration(seconds: 1));
+          timeout++;
+       }
+       return _cachedEmail != null;
+    }
+
     megaConnectionState = MegaConnectionState.restoring;
     debugPrint('SESSION RESTORE START for $email');
 
@@ -153,11 +171,17 @@ class MEGABackupService extends BaseCloudBackupProvider {
       );
 
       if (result['success'] == true) {
-        _cachedEmail = email;
-        lastError = null;
-        debugPrint('MEGA SESSION RESTORED AND READY');
-        megaConnectionState = MegaConnectionState.ready;
-        return true;
+        // Essential: double-check ready state before declaring success
+        if (await _sdk.isReady()) {
+          _cachedEmail = email;
+          lastError = null;
+          debugPrint('MEGA SESSION RESTORED AND READY');
+          megaConnectionState = MegaConnectionState.ready;
+          return true;
+        } else {
+          debugPrint('MEGA SESSION RESTORED BUT NOT READY');
+          // Fall through to failure
+        }
       }
 
       lastError = (result['error'] as String?)?.isNotEmpty == true
@@ -169,6 +193,10 @@ class MEGABackupService extends BaseCloudBackupProvider {
     } on TimeoutException {
       lastError = 'Restore timed out after 60s';
       debugPrint('MEGA SESSION RESTORE TIMED OUT');
+      megaConnectionState = MegaConnectionState.failed;
+      return false;
+    } catch (e) {
+      debugPrint('MEGA SESSION RESTORE EXCEPTION: $e');
       megaConnectionState = MegaConnectionState.failed;
       return false;
     }
@@ -297,6 +325,7 @@ class MEGABackupService extends BaseCloudBackupProvider {
     final manifest = {
       'type': 'chunked_manifest',
       'baseName': baseName,
+      'cloudBaseName': cloudBaseName, // MUST be included for cross-device restore
       'partCount': partCount,
       'totalSize': bytes.length,
       'checksum': checksum,
@@ -416,7 +445,10 @@ class MEGABackupService extends BaseCloudBackupProvider {
     String manifestFileId,
   ) async {
     final manifestResult = await _sdk.downloadFile(manifestFileId);
-    if (manifestResult['success'] != true) return null;
+    if (manifestResult['success'] != true) {
+      debugPrint('MEGA_RESTORE: Manifest download failed for $manifestFileId');
+      return null;
+    }
 
     final manifestBytes = manifestResult['bytes'] as List<int>;
     if (manifestBytes.isEmpty) return null;
@@ -425,14 +457,18 @@ class MEGABackupService extends BaseCloudBackupProvider {
     try {
       manifest =
           jsonDecode(utf8.decode(manifestBytes)) as Map<String, dynamic>;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('MEGA_RESTORE: Manifest parse failed: $e');
       return null;
     }
 
     final partCount = manifest['partCount'] as int;
     final totalSize = manifest['totalSize'] as int;
     final expectedChecksum = manifest['checksum'] as String;
+    
+    // Cloud base name is essential for finding parts when names are obfuscated
     final cloudBaseName = manifest['cloudBaseName'] as String? ?? baseName;
+    debugPrint('MEGA_RESTORE: Found manifest, baseName=$baseName, cloudBaseName=$cloudBaseName, parts=$partCount');
 
     final nodes = await _listBackupNodes();
     final partPrefix = '${cloudBaseName}_p';
@@ -442,20 +478,34 @@ class MEGABackupService extends BaseCloudBackupProvider {
       ..sort((a, b) =>
           (a['name'] as String).compareTo(b['name'] as String));
 
-    if (parts.length < partCount) return null;
+    if (parts.length < partCount) {
+       debugPrint('MEGA_RESTORE: Missing parts! Found ${parts.length} of $partCount');
+       return null;
+    }
 
     final allBytes = <int>[];
-    for (final part in parts) {
+    for (var i = 0; i < parts.length; i++) {
+      final part = parts[i];
+      debugPrint('MEGA_RESTORE: Downloading part ${i+1}/$partCount (${part['name']})...');
       final chunkResult = await _sdk.downloadFile(part['handle'] as String);
       if (chunkResult['success'] != true || chunkResult['bytes'] == null) {
+        debugPrint('MEGA_RESTORE: Part download failed for ${part['name']}');
         return null;
       }
       allBytes.addAll(chunkResult['bytes'] as List<int>);
     }
 
-    if (allBytes.length != totalSize) return null;
-    if (sha256.convert(allBytes).toString() != expectedChecksum) return null;
+    if (allBytes.length != totalSize) {
+      debugPrint('MEGA_RESTORE: Size mismatch: expected $totalSize, got ${allBytes.length}');
+      return null;
+    }
+    final actualChecksum = sha256.convert(allBytes).toString();
+    if (actualChecksum != expectedChecksum) {
+      debugPrint('MEGA_RESTORE: Checksum mismatch');
+      return null;
+    }
 
+    debugPrint('MEGA_RESTORE: Chunked restore successful');
     return allBytes;
   }
 

@@ -916,7 +916,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
           child: Row(
             children: [
               Expanded(
@@ -953,14 +953,22 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
               const SizedBox(width: 8),
               IconButton.filledTonal(
                 onPressed: () {
-                  showModalBottomSheet(
+                  showDialog(
                     context: context,
-                    builder: (_) => ViewSwitcherSheet(
-                      currentMode: _viewMode,
-                      onModeSelected: (mode) {
-                        setState(() => _viewMode = mode);
-                        Hive.box('vaultx_settings').put('viewMode', mode.name);
-                      },
+                    builder: (_) => Dialog(
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(28),
+                      ),
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 400),
+                        child: ViewSwitcherSheet(
+                          currentMode: _viewMode,
+                          onModeSelected: (mode) {
+                            setState(() => _viewMode = mode);
+                            Hive.box('vaultx_settings').put('viewMode', mode.name);
+                          },
+                        ),
+                      ),
                     ),
                   );
                 },
@@ -1084,74 +1092,77 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
                       onRefresh: _load,
                       child: AnimatedSwitcher(
                         duration: const Duration(milliseconds: 200),
-                        child: NoteViewsRenderer(
-                          key: ValueKey('${_viewMode.name}_$_query'),
-                          mode: _viewMode,
-                          notes: visibleNotes,
-                          categories: _noteCategories,
-                          selectedIds: _selectedIds,
-                          onSelectionToggle: _onSelectionToggle,
-                          blobs: _blobs,
-                          hasMore: showCount < filtered.length,
-                          onLoadMore: () {
-                            _visibleCount.value = (visible + _kPageSize).clamp(0, filtered.length);
-                          },
-                          onTap: (note) async {
-                            if (note.locked) {
-                              final authenticated = await _authenticateForAction('Unlock Note');
-                              if (!authenticated) return;
-                            }
-                            await _openEditor(note);
-                            if (note.oneTimeView) {
+                        child: Padding(
+                          padding: const EdgeInsets.only(bottom: 32),
+                          child: NoteViewsRenderer(
+                            key: ValueKey('${_viewMode.name}_$_query'),
+                            mode: _viewMode,
+                            notes: visibleNotes,
+                            categories: _noteCategories,
+                            selectedIds: _selectedIds,
+                            onSelectionToggle: _onSelectionToggle,
+                            blobs: _blobs,
+                            hasMore: showCount < filtered.length,
+                            onLoadMore: () {
+                              _visibleCount.value = (visible + _kPageSize).clamp(0, filtered.length);
+                            },
+                            onTap: (note) async {
+                              if (note.locked) {
+                                final authenticated = await _authenticateForAction('Unlock Note');
+                                if (!authenticated) return;
+                              }
+                              await _openEditor(note);
+                              if (note.oneTimeView) {
+                                if (widget.authResult.kind == VaultKind.decoy) {
+                                  await DecoySeedService.deleteNote(note.id);
+                                } else {
+                                  await _repo!.delete(note.id);
+                                }
+                              }
+                            },
+                            onDelete: (note) async {
                               if (widget.authResult.kind == VaultKind.decoy) {
                                 await DecoySeedService.deleteNote(note.id);
                               } else {
-                                await _repo!.delete(note.id);
+                                await _itemActions?.deleteNote(context, note);
                               }
-                            }
-                          },
-                          onDelete: (note) async {
-                            if (widget.authResult.kind == VaultKind.decoy) {
-                              await DecoySeedService.deleteNote(note.id);
-                            } else {
-                              await _itemActions?.deleteNote(context, note);
-                            }
-                            await _load();
-                          },
-                          onToggleArchive: (note) async {
-                            if (widget.authResult.kind == VaultKind.decoy) return;
-                            await _itemActions?.archiveNote(context, note);
-                            await _load();
-                          },
-                          onToggleFavorite: (note) async {
-                            if (widget.authResult.kind == VaultKind.decoy) {
-                              await DecoySeedService.saveNote(
-                                note.copyWith(favorite: !note.favorite),
-                              );
-                            } else {
-                              await _repo!.save(note.copyWith(favorite: !note.favorite));
-                            }
-                            await _load();
-                          },
-                          onTogglePin: (note) async {
-                            if (widget.authResult.kind == VaultKind.decoy) return;
-                            await _itemActions?.pinNote(context, note);
-                            await _load();
-                          },
-                          onToggleLock: (note) async {
-                            if (widget.authResult.kind == VaultKind.decoy) return;
-                            await _itemActions?.lockNote(context, note);
-                            await _load();
-                          },
-                          onShare: (note) async {
-                            if (widget.authResult.kind == VaultKind.decoy) return;
-                            await _itemActions?.shareNote(context, note);
-                          },
-                          onMove: (note) async {
-                            if (widget.authResult.kind == VaultKind.decoy) return;
-                            await _itemActions?.moveNote(context, note);
-                            await _load();
-                          },
+                              await _load();
+                            },
+                            onToggleArchive: (note) async {
+                              if (widget.authResult.kind == VaultKind.decoy) return;
+                              await _itemActions?.archiveNote(context, note);
+                              await _load();
+                            },
+                            onToggleFavorite: (note) async {
+                              if (widget.authResult.kind == VaultKind.decoy) {
+                                await DecoySeedService.saveNote(
+                                  note.copyWith(favorite: !note.favorite),
+                                );
+                              } else {
+                                await _repo!.save(note.copyWith(favorite: !note.favorite));
+                              }
+                              await _load();
+                            },
+                            onTogglePin: (note) async {
+                              if (widget.authResult.kind == VaultKind.decoy) return;
+                              await _itemActions?.pinNote(context, note);
+                              await _load();
+                            },
+                            onToggleLock: (note) async {
+                              if (widget.authResult.kind == VaultKind.decoy) return;
+                              await _itemActions?.lockNote(context, note);
+                              await _load();
+                            },
+                            onShare: (note) async {
+                              if (widget.authResult.kind == VaultKind.decoy) return;
+                              await _itemActions?.shareNote(context, note);
+                            },
+                            onMove: (note) async {
+                              if (widget.authResult.kind == VaultKind.decoy) return;
+                              await _itemActions?.moveNote(context, note);
+                              await _load();
+                            },
+                          ),
                         ),
                       ),
                     );

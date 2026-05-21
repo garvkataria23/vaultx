@@ -657,7 +657,7 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
         const SizedBox(height: 16),
 
         FilledButton.tonalIcon(style: FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.errorContainer, foregroundColor: Theme.of(context).colorScheme.error), onPressed: _showDeleteEverythingFlow, icon: const Icon(Icons.delete_forever), label: const Text('Delete Everything')),
-        const SizedBox(height: 32),
+        const SizedBox(height: 120),
       ],
     );
   }

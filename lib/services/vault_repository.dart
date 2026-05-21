@@ -27,7 +27,9 @@ class VaultRepository {
   /// an all-zeros key. Copying gives this repo its own bytes, unaffected by
   /// external wipes.
   VaultRepository(Uint8List masterKey, this.kind)
-    : masterKey = Uint8List.fromList(masterKey);
+    : masterKey = Uint8List.fromList(masterKey) {
+    _instances.add(this);
+  }
   final Uint8List masterKey;
   final VaultKind kind;
   final _crypto = CryptoService();
@@ -38,6 +40,22 @@ class VaultRepository {
   /// Caches decrypted note JSON by composite key "noteId:salt" to avoid
   /// re-decrypting notes that haven't changed.
   final _decryptCache = <String, Map<String, dynamic>>{};
+
+  static final List<VaultRepository> _instances = [];
+
+  /// Invalidates ALL decryption caches for all active repositories.
+  /// Must be called after a restore or bulk external modification.
+  static void clearAllCaches() {
+    for (final instance in _instances) {
+      instance.clearCache();
+    }
+    debugPrint('VAULT_REPO: cleared caches for ${_instances.length} instances');
+  }
+
+  /// Clears the internal decryption cache for this repository instance.
+  void clearCache() {
+    _decryptCache.clear();
+  }
 
   /// FIX: Deep-converts any nested Map (including Hive's LinkedMap&lt;dynamic,dynamic&gt;)
   /// to Map&lt;String, dynamic&gt; recursively. This is critical for the backup
@@ -252,6 +270,7 @@ class VaultRepository {
       'payload': payload,
       'backupExcluded': note.backupExcluded,
       'folder': note.folder,
+      'updatedAt': note.updatedAt.toIso8601String(), // For efficient merging
     });
     // Invalidate ALL cache entries for this note (new salt = new cache key)
     _decryptCache.removeWhere((key, _) => key.startsWith('${note.id}:'));
@@ -275,6 +294,7 @@ class VaultRepository {
         'payload': payload,
         'backupExcluded': note.backupExcluded,
         'folder': note.folder,
+        'updatedAt': note.updatedAt.toIso8601String(), // For efficient merging
       };
       
       _decryptCache.removeWhere((key, _) => key.startsWith('${note.id}:'));

@@ -378,6 +378,7 @@ class GoogleDriveBackupService extends BaseCloudBackupProvider {
     final manifest = {
       'type': 'chunked_manifest',
       'baseName': baseName,
+      'cloudBaseName': cloudBaseName, // MUST be included for cross-device restore
       'partCount': partCount,
       'totalSize': bytes.length,
       'checksum': checksum,
@@ -484,18 +485,23 @@ class GoogleDriveBackupService extends BaseCloudBackupProvider {
     final expectedChecksum = manifest['checksum'] as String;
 
     // We need to find the cloudBaseName to download parts.
-    // If it's a legacy manifest, the baseName is in the filename.
-    // If it's a new manifest, we look at the manifest file's description.
-    String partPrefix;
-    final manifestMeta = await _driveApi!.files.get(manifestFileId, $fields: 'name,description') as drive.File;
-    final decrypted = decryptCloudMetadata(manifestMeta.description);
+    // 1. Try manifest JSON (included in newer backups for cross-device support)
+    // 2. Try manifest file description (requires masterKey)
+    // 3. Fallback to original baseName (legacy)
+    String? cloudBaseName = manifest['cloudBaseName'] as String?;
     
-    if (decrypted != null && decrypted['cloudBaseName'] != null) {
-      partPrefix = '${decrypted['cloudBaseName']}_p';
-    } else {
-      // Legacy support
-      partPrefix = '${baseName}_part';
+    if (cloudBaseName == null) {
+      try {
+        final manifestMeta = await _driveApi!.files.get(manifestFileId, $fields: 'name,description') as drive.File;
+        final decrypted = decryptCloudMetadata(manifestMeta.description);
+        if (decrypted != null && decrypted['cloudBaseName'] != null) {
+          cloudBaseName = decrypted['cloudBaseName'] as String;
+        }
+      } catch (_) {}
     }
+
+    final partPrefix = cloudBaseName != null ? '${cloudBaseName}_p' : '${baseName}_part';
+    debugPrint('GD_RESTORE: Downloading chunked backup, partPrefix=$partPrefix, parts=$partCount');
 
     final allParts = <drive.File>[];
     String? nextPageToken;
@@ -518,14 +524,19 @@ class GoogleDriveBackupService extends BaseCloudBackupProvider {
       partPages++;
     } while (nextPageToken != null && nextPageToken.isNotEmpty && partPages < maxPartPages);
 
-    if (allParts.length < partCount) return null;
+    if (allParts.length < partCount) {
+      debugPrint('GD_RESTORE: Found only ${allParts.length}/$partCount parts');
+      return null;
+    }
 
     // Filtering exactly by prefix just in case "contains" was too broad
     final filteredParts = allParts.where((f) => f.name != null && f.name!.startsWith(partPrefix)).toList();
     if (filteredParts.length < partCount) return null;
 
     final allBytes = <int>[];
-    for (final partFile in filteredParts) {
+    for (var i = 0; i < filteredParts.length; i++) {
+      final partFile = filteredParts[i];
+      debugPrint('GD_RESTORE: Downloading part ${i+1}/$partCount (${partFile.name})...');
       final chunk = await downloadFileBytes(partFile.id!);
       if (chunk == null || chunk.isEmpty) return null;
       allBytes.addAll(chunk);

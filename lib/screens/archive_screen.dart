@@ -496,7 +496,7 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
                   child: _filtered.isEmpty
                       ? _buildEmptyState(cs)
                       : ListView.builder(
-                          padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
+                          padding: const EdgeInsets.fromLTRB(12, 4, 12, 120),
                           itemCount: _filtered.length,
                           itemBuilder: (_, i) =>
                               _buildItemCard(_filtered[i], cs),

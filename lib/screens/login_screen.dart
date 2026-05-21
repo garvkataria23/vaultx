@@ -349,8 +349,7 @@ class _LoginScreenState extends State<LoginScreen> {
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 420),
               child: ListView(
-                padding: const EdgeInsets.all(24),
-                shrinkWrap: true,
+                padding: const EdgeInsets.fromLTRB(24, 24, 24, 80),
                 children: [
                   Icon(Icons.lock_outline, size: 56, color: cs.primary),
                   const SizedBox(height: 16),

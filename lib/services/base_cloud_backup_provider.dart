@@ -100,8 +100,11 @@ abstract class BaseCloudBackupProvider implements CloudStorageProvider {
       debugPrint('DOWNLOAD VERSION: fileName=${version.fileName} fileId=${version.driveFileId}');
       
       List<int>? bytes;
-      if (version.fileName.endsWith('_manifest.json')) {
-        final baseName = version.fileName.replaceAll('_manifest.json', '');
+      // Detection: is it a manifest? 
+      // 1. Filename ends with _manifest.json (legacy/GDrive with masterKey)
+      // 2. Filename ends with _m.dat (obfuscated format)
+      if (version.fileName.endsWith('_manifest.json') || version.fileName.endsWith('_m.dat')) {
+        final baseName = version.fileName.replaceAll('_manifest.json', '').replaceAll('_m.dat', '');
         bytes = await downloadChunked(baseName, version.driveFileId);
       } else {
         // We might want to pass expected checksum here if available, 
@@ -110,7 +113,22 @@ abstract class BaseCloudBackupProvider implements CloudStorageProvider {
       }
 
       if (bytes == null) return null;
-      return processDownloadedBytes(bytes, version.fileName);
+
+      // Special case: if we downloaded a file and it turns out to be a chunked manifest 
+      // (happens if naming convention wasn't caught above), we should try downloading parts.
+      if (!version.fileName.endsWith('_manifest.json') && !version.fileName.endsWith('_m.dat')) {
+        try {
+          final decoded = jsonDecode(utf8.decode(bytes!)) as Map<String, dynamic>;
+          if (decoded['type'] == 'chunked_manifest') {
+             debugPrint('DOWNLOAD VERSION: caught chunked manifest by content');
+             final baseName = version.fileName.split('.').first;
+             bytes = await downloadChunked(baseName, version.driveFileId);
+             if (bytes == null) return null;
+          }
+        } catch (_) {}
+      }
+
+      return processDownloadedBytes(bytes!, version.fileName);
     } catch (e, st) {
       debugPrint('DOWNLOAD VERSION ERROR: $e\n$st');
       return null;
@@ -220,9 +238,10 @@ abstract class BaseCloudBackupProvider implements CloudStorageProvider {
     
     Map<String, dynamic> decoded;
     try {
-      if (fileName.endsWith('.vxbackup')) {
+      // Obfuscated archives end with .vxbin
+      if (fileName.endsWith('.vxbackup') || fileName.endsWith('.vxbin')) {
         final tempDir = await getTemporaryDirectory();
-        final archivePath = '${tempDir.path}/$fileName';
+        final archivePath = '${tempDir.path}/${fileName.endsWith(".vxbin") ? "restore.vxbackup" : fileName}';
         await File(archivePath).writeAsBytes(bytes);
         decoded = await ArchiveService.extractArchive(archivePath);
         await ArchiveService.cleanup(archivePath);

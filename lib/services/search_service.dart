@@ -30,9 +30,9 @@ class SearchService {
   Future<void> get ready => _readyCompleter?.future ?? Future.value();
 
   /// Pre-filter notes using the persistent search index for faster queries.
-  List<SecureNote> _prefilterByIndex(List<SecureNote> notes, String query) {
+  Future<List<SecureNote>> _prefilterByIndex(List<SecureNote> notes, String query) async {
     if (query.isEmpty) return notes;
-    final matchedIds = SearchIndexService.instance.search(query);
+    final matchedIds = await SearchIndexService.instance.search(query);
     if (matchedIds.isEmpty) return notes;
     return notes.where((n) => matchedIds.contains(n.id)).toList();
   }
@@ -41,11 +41,11 @@ class SearchService {
   ///
   /// Returns matches sorted by relevance. Pass [allNotes] when available
   /// to enable duplicate detection and category grouping.
-  List<SearchMatch> search(
+  Future<List<SearchMatch>> search(
     List<SecureNote> notes,
     SearchFilters filters, {
     List<SecureNote>? allNotes,
-  }) {
+  }) async {
     if (_isNoOp(filters)) {
       final results = notes
           .map((n) => SearchMatch(note: n, score: 1.0))
@@ -57,7 +57,7 @@ class SearchService {
     // Fast-path: use persistent index to narrow candidate pool by query.
     var candidates = notes;
     if (filters.query.isNotEmpty) {
-      candidates = _prefilterByIndex(notes, filters.query);
+      candidates = await _prefilterByIndex(notes, filters.query);
     }
 
     final filtered = _applyCategoryFilter(candidates, filters);
@@ -78,7 +78,12 @@ class SearchService {
       return results;
     }
 
-    final filtered = _applyCategoryFilter(notes, filters);
+    var candidates = notes;
+    if (filters.query.isNotEmpty) {
+      candidates = await _prefilterByIndex(notes, filters.query);
+    }
+
+    final filtered = _applyCategoryFilter(candidates, filters);
     return SmartIndexerService.searchAsync(filtered, filters);
   }
 

@@ -203,7 +203,7 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
     return ListView(
       key: const PageStorageKey('smart_view'),
       controller: _scrollController,
-      padding: EdgeInsets.fromLTRB(12, 12, 12, MediaQuery.of(context).viewPadding.bottom + 32),
+      padding: EdgeInsets.fromLTRB(12, 8, 12, MediaQuery.of(context).viewPadding.bottom + 80),
       children: [
         ...sortedCategories.map((category) {
           final notes = grouped[category] ?? [];
@@ -213,25 +213,25 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
           final cs = Theme.of(context).colorScheme;
 
           return Card(
-            margin: const EdgeInsets.only(bottom: 12),
+            margin: const EdgeInsets.only(bottom: 8),
             elevation: 0,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(16),
-              side: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.5)),
+              side: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.3)),
             ),
             child: ExpansionTile(
               key: PageStorageKey('cat_${category.name}'),
-              leading: Text(meta.icon, style: const TextStyle(fontSize: 24)),
+              leading: Text(meta.icon, style: const TextStyle(fontSize: 20)),
               title: Text(
                 meta.label,
-                style: const TextStyle(fontWeight: FontWeight.bold),
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
               ),
               subtitle: Text(
-                '${notes.length} notes \u2022 ${meta.description}',
-                style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+                '${notes.length} notes',
+                style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
               ),
               shape: const RoundedRectangleBorder(side: BorderSide.none),
-              childrenPadding: const EdgeInsets.only(bottom: 8),
+              childrenPadding: const EdgeInsets.only(bottom: 4),
               children: notes.map((n) => _buildCard(n, isDetailed: true)).toList(),
             ),
           );
@@ -343,7 +343,7 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
     return GridView.builder(
       key: const PageStorageKey('grid_view'),
       controller: _scrollController,
-      padding: widget.padding ?? const EdgeInsets.all(12),
+      padding: widget.padding ?? EdgeInsets.fromLTRB(12, 12, 12, MediaQuery.of(context).viewPadding.bottom + 80),
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 2,
         childAspectRatio: 0.85,
@@ -359,7 +359,7 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
     return ListView.builder(
       key: const PageStorageKey('list_view'),
       controller: _scrollController,
-      padding: widget.padding ?? const EdgeInsets.all(12),
+      padding: widget.padding ?? EdgeInsets.fromLTRB(12, 12, 12, MediaQuery.of(context).viewPadding.bottom + 80),
       itemCount: widget.notes.length,
       itemBuilder: (context, i) {
         // In List view, we use isGrid: false so it doesn't try to fill height
@@ -372,7 +372,7 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
     return ListView.builder(
       key: const PageStorageKey('compact_view'),
       controller: _scrollController,
-      padding: widget.padding ?? const EdgeInsets.symmetric(vertical: 8),
+      padding: widget.padding ?? EdgeInsets.fromLTRB(0, 8, 0, MediaQuery.of(context).viewPadding.bottom + 80),
       itemCount: widget.notes.length,
       itemBuilder: (context, i) => _buildCard(widget.notes[i], isCompact: true),
     );
@@ -382,7 +382,7 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
     return ListView.builder(
       key: const PageStorageKey('detailed_view'),
       controller: _scrollController,
-      padding: widget.padding ?? const EdgeInsets.symmetric(vertical: 8),
+      padding: widget.padding ?? EdgeInsets.fromLTRB(0, 8, 0, MediaQuery.of(context).viewPadding.bottom + 80),
       itemCount: widget.notes.length,
       itemBuilder: (context, i) => _buildCard(widget.notes[i], isDetailed: true),
     );
@@ -404,7 +404,7 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
       key: const PageStorageKey('masonry_view'),
       controller: _scrollController,
       physics: const AlwaysScrollableScrollPhysics(),
-      padding: widget.padding ?? const EdgeInsets.all(12),
+      padding: widget.padding ?? EdgeInsets.fromLTRB(12, 12, 12, MediaQuery.of(context).viewPadding.bottom + 80),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -453,7 +453,7 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
 
     return ListView(
       controller: _scrollController,
-      padding: widget.padding ?? const EdgeInsets.all(16),
+      padding: widget.padding ?? EdgeInsets.fromLTRB(16, 16, 16, MediaQuery.of(context).viewPadding.bottom + 80),
       children: groups.entries.where((e) => e.value.isNotEmpty).map((e) {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -481,7 +481,7 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
     
     return ListView.builder(
       controller: _scrollController,
-      padding: widget.padding ?? const EdgeInsets.all(12),
+      padding: widget.padding ?? EdgeInsets.fromLTRB(12, 12, 12, MediaQuery.of(context).viewPadding.bottom + 80),
       itemCount: keys.length,
       itemBuilder: (ctx, i) {
         final folder = keys[i];
@@ -503,7 +503,7 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
     }
     return GridView.builder(
       controller: _scrollController,
-      padding: widget.padding ?? const EdgeInsets.all(12),
+      padding: widget.padding ?? EdgeInsets.fromLTRB(12, 12, 12, MediaQuery.of(context).viewPadding.bottom + 80),
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 2,
         childAspectRatio: 1.0,
@@ -551,7 +551,7 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
     final keys = dateMap.keys.toList();
     return ListView.builder(
       controller: _scrollController,
-      padding: widget.padding,
+      padding: widget.padding ?? EdgeInsets.fromLTRB(0, 0, 0, MediaQuery.of(context).viewPadding.bottom + 80),
       itemCount: keys.length,
       itemBuilder: (ctx, i) {
         return Column(
@@ -579,62 +579,66 @@ class ViewSwitcherSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      bottom: false,
-      child: SingleChildScrollView(
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.of(context).padding.bottom + 24,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
+          child: Text(
+            'View Layout',
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+          ),
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text('View Layout', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600)),
-            ),
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const AlwaysScrollableScrollPhysics(),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                childAspectRatio: 1.2,
-                crossAxisSpacing: 10,
-                mainAxisSpacing: 10,
-              ),
-              itemCount: NoteViewMode.values.length,
-              itemBuilder: (ctx, i) {
-                final mode = NoteViewMode.values[i];
-                final isSelected = mode == currentMode;
-                final cs = Theme.of(context).colorScheme;
-                return InkWell(
-                  onTap: () {
-                    onModeSelected(mode);
-                    Navigator.pop(context);
-                  },
-                  borderRadius: BorderRadius.circular(12),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: isSelected ? cs.primaryContainer : cs.surfaceContainerHighest.withValues(alpha: 0.3),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: isSelected ? cs.primary : cs.outlineVariant.withValues(alpha: 0.5)),
-                    ),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(noteViewIcons[mode], color: isSelected ? cs.onPrimaryContainer : cs.onSurface),
-                        const SizedBox(height: 8),
-                        Text(noteViewNames[mode]!, style: TextStyle(fontSize: 12, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal, color: isSelected ? cs.onPrimaryContainer : cs.onSurface)),
-                      ],
-                    ),
-                  ),
-                );
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 3,
+            childAspectRatio: 1.2,
+            crossAxisSpacing: 10,
+            mainAxisSpacing: 10,
+          ),
+          itemCount: NoteViewMode.values.length,
+          itemBuilder: (ctx, i) {
+            final mode = NoteViewMode.values[i];
+            final isSelected = mode == currentMode;
+            final cs = Theme.of(context).colorScheme;
+            return InkWell(
+              onTap: () {
+                onModeSelected(mode);
+                Navigator.pop(context);
               },
-            ),
-            const SizedBox(height: 16),
-          ],
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: isSelected ? cs.primaryContainer : cs.surfaceContainerHighest.withValues(alpha: 0.3),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: isSelected ? cs.primary : cs.outlineVariant.withValues(alpha: 0.5)),
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(noteViewIcons[mode], color: isSelected ? cs.onPrimaryContainer : cs.onSurface),
+                    const SizedBox(height: 8),
+                    Text(
+                      noteViewNames[mode]!,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                        color: isSelected ? cs.onPrimaryContainer : cs.onSurface,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
         ),
-      ),
+        const SizedBox(height: 24),
+      ],
     );
   }
 }

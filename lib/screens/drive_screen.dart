@@ -1540,7 +1540,7 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
     }
 
     return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 120),
       itemCount: _filtered.length,
       itemBuilder: (_, i) => DriveFileTile(
         file: _filtered[i],
@@ -1584,7 +1584,7 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
     }
 
     return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 120),
       itemCount: favorites.length,
       itemBuilder: (_, i) => DriveFileTile(
         file: favorites[i],

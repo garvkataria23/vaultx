@@ -16,7 +16,9 @@ import 'crypto_service.dart';
 /// stores entries in a dedicated `vaultx_passwords` box.
 class PasswordVaultService {
   PasswordVaultService(Uint8List masterKey, this.kind)
-    : masterKey = Uint8List.fromList(masterKey);
+    : masterKey = Uint8List.fromList(masterKey) {
+    _instances.add(this);
+  }
 
   final Uint8List masterKey;
   final VaultKind kind;
@@ -28,6 +30,20 @@ class PasswordVaultService {
   String get _prefix => kind == VaultKind.hidden ? 'hidden_pw' : 'main_pw';
 
   final _decryptCache = <String, PasswordEntry>{};
+
+  static final List<PasswordVaultService> _instances = [];
+
+  /// Invalidates ALL decryption caches for all active password services.
+  static void clearAllCaches() {
+    for (final instance in _instances) {
+      instance.clearCache();
+    }
+    debugPrint('PW_VAULT: cleared caches for ${_instances.length} instances');
+  }
+
+  void clearCache() {
+    _decryptCache.clear();
+  }
 
   static Map<String, dynamic> _deepConvert(Map raw) {
     return raw.map((k, v) {

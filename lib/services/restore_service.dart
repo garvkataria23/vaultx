@@ -12,6 +12,9 @@ import 'auth_service.dart';
 import 'backup_service.dart';
 import 'cloud_storage_provider.dart';
 import 'crypto_service.dart';
+import 'password_vault_service.dart';
+import 'search_index_service.dart';
+import 'vault_repository.dart';
 
 /// Callback for restore progress reporting.
 typedef RestoreProgressCallback = void Function(RestoreProgress progress);
@@ -452,16 +455,18 @@ class RestoreService {
   }
 
   Future<void> _rebuildIndexes() async {
-    // Invalidate all Hive caches and reload state
-    final recordsBox = Hive.box('vaultx_records');
-    final driveBox = Hive.box('vaultx_drive');
-    final passwordsBox = Hive.box('vaultx_passwords');
+    // 1. Invalidate all Hive caches (repositories)
+    VaultRepository.clearAllCaches();
+    PasswordVaultService.clearAllCaches();
 
-    // Force re-read by invalidating any in-memory caches
-    await recordsBox.get('');
-    await driveBox.get('');
-    await passwordsBox.get('');
-
+    // 2. Rebuild search index
+    // We need a temporary repo to decrypt notes for indexing
+    final tempRepo = VaultRepository(masterKey, kind);
+    final allNotes = await tempRepo.loadNotes();
+    final trashNotes = await tempRepo.loadTrashNotes();
+    
+    await SearchIndexService.instance.rebuild([...allNotes, ...trashNotes]);
+    
     debugPrint('RESTORE REBUILD: indexes rebuilt, caches invalidated');
   }
 

@@ -521,7 +521,7 @@ class _TrashScreenState extends State<TrashScreen> {
                       ),
                     Expanded(
                       child: ListView.builder(
-                        padding: const EdgeInsets.all(12),
+                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 120),
                         itemCount: _filteredItems.length,
                         itemBuilder: (_, i) => _buildTrashCard(_filteredItems[i], cs),
                       ),

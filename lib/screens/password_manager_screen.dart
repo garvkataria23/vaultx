@@ -231,7 +231,7 @@ class _PasswordManagerScreenState extends State<PasswordManagerScreen> {
                   child: _filtered.isEmpty
                       ? _buildEmptyState(cs)
                       : ListView.builder(
-                          padding: const EdgeInsets.fromLTRB(12, 4, 12, 80),
+                          padding: const EdgeInsets.fromLTRB(12, 4, 12, 120),
                           itemCount: _filtered.length,
                           itemBuilder: (_, i) =>
                               _buildEntryCard(_filtered[i], cs),

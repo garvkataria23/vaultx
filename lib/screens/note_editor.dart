@@ -1004,7 +1004,7 @@ class _NoteEditorState extends State<NoteEditor> {
         ],
       ),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
         children: [
           if (_sensitiveDetected)
             Card(
@@ -1413,139 +1413,107 @@ class _NoteEditorState extends State<NoteEditor> {
             ),
           ],
           if (_note.attachments.any((a) => a.kind == 'voice')) ...[
-            const SizedBox(height: 16),
-            Text(
-              'Voice transcription',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
             const SizedBox(height: 8),
+            Text('Transcription', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 4),
             if (_transcribing)
               const Padding(
-                padding: EdgeInsets.symmetric(vertical: 8),
+                padding: EdgeInsets.symmetric(vertical: 4),
                 child: Row(
                   children: [
-                    SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                    SizedBox(width: 12),
-                    Text('Transcribing audio…'),
+                    SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+                    SizedBox(width: 10),
+                    Text('Transcribing...', style: TextStyle(fontSize: 12)),
                   ],
                 ),
               ),
             if (_note.transcript.isNotEmpty && !_transcribing) ...[
               TextField(
                 readOnly: true,
-                minLines: 3,
-                maxLines: 8,
+                minLines: 2,
+                maxLines: 5,
+                style: const TextStyle(fontSize: 13),
                 decoration: const InputDecoration(
-                  labelText: 'Transcribed text',
-                  helperText: 'Speech-to-text result — searchable',
+                  labelText: 'Transcript',
                   border: OutlineInputBorder(),
+                  contentPadding: EdgeInsets.all(8),
                 ),
                 controller: TextEditingController(text: _note.transcript),
               ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () {
-                        setState(() {
-                          _body.text = _body.text.isEmpty
-                              ? _note.transcript
-                              : '${_body.text}\n\n--- Transcribed text ---\n${_note.transcript}';
-                        });
-                      },
-                      icon: const Icon(Icons.copy, size: 16),
-                      label: const Text('Copy to note body'),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-            if (_note.transcript.isEmpty && !_transcribing &&
-                TranscriptionService.isAvailable())
+              const SizedBox(height: 4),
               OutlinedButton.icon(
                 onPressed: () {
-                  final voiceAttachments = _note.attachments
-                      .where((a) => a.kind == 'voice')
-                      .toList();
-                  if (voiceAttachments.isNotEmpty) {
-                    _transcribeAttachment(voiceAttachments.first);
-                  }
+                  setState(() {
+                    _body.text = _body.text.isEmpty ? _note.transcript : '${_body.text}\n\n--- Transcript ---\n${_note.transcript}';
+                  });
                 },
-                icon: const Icon(Icons.transcribe),
-                label: const Text('Transcribe voice notes'),
+                icon: const Icon(Icons.copy, size: 14),
+                label: const Text('Copy to body'),
+                style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
+              ),
+            ],
+            if (_note.transcript.isEmpty && !_transcribing && TranscriptionService.isAvailable())
+              OutlinedButton.icon(
+                onPressed: () {
+                  final v = _note.attachments.firstWhere((a) => a.kind == 'voice');
+                  _transcribeAttachment(v);
+                },
+                icon: const Icon(Icons.transcribe, size: 16),
+                label: const Text('Transcribe'),
+                style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
               ),
           ],
           if (_hasImageAttachments || _ocrText.text.isNotEmpty) ...[
-            const SizedBox(height: 16),
-            Text(
-              'OCR text extraction',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
             const SizedBox(height: 8),
+            Text('OCR', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 4),
             if (_ocrJobIds != null)
               OcrQueueIndicator(
                 service: _queueService,
                 onResults: (jobs) {
-                  final texts = jobs
-                      .where((j) => j.result != null && j.result!.isNotEmpty)
-                      .map((j) => '--- ${j.attachmentName} ---\n${j.result}')
-                      .join('\n\n');
+                  final texts = jobs.where((j) => j.result != null).map((j) => j.result).join('\n\n');
                   if (texts.isNotEmpty) _ocrText.text = texts;
-                  setState(() => _ocrJobIds = null);
-                },
-                onClose: () {
-                  _queueService.cancelAll();
                   setState(() => _ocrJobIds = null);
                 },
               ),
             if (_hasImageAttachments && _ocrJobIds == null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: OutlinedButton.icon(
-                  onPressed: _enqueueOcrJobs,
-                  icon: const Icon(Icons.text_snippet),
-                  label: const Text('Extract text from images'),
-                ),
+              OutlinedButton.icon(
+                onPressed: _enqueueOcrJobs,
+                icon: const Icon(Icons.text_snippet, size: 16),
+                label: const Text('Extract Text'),
+                style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
               ),
             if (_ocrText.text.isNotEmpty) ...[
+              const SizedBox(height: 4),
               TextField(
                 controller: _ocrText,
-                minLines: 3,
-                maxLines: 8,
+                minLines: 2,
+                maxLines: 5,
+                style: const TextStyle(fontSize: 13),
                 decoration: const InputDecoration(
-                  labelText: 'Extracted text (editable)',
-                  helperText: 'OCR results — review and edit before saving',
+                  labelText: 'Extracted text',
                   border: OutlineInputBorder(),
+                  contentPadding: EdgeInsets.all(8),
                 ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 4),
               Row(
                 children: [
                   Expanded(
                     child: OutlinedButton.icon(
                       onPressed: () {
-                        _body.text = _body.text.isEmpty
-                            ? _ocrText.text
-                            : '${_body.text}\n\n--- Extracted text ---\n${_ocrText.text}';
+                        _body.text = _body.text.isEmpty ? _ocrText.text : '${_body.text}\n\n--- OCR ---\n${_ocrText.text}';
                       },
-                      icon: const Icon(Icons.copy, size: 16),
-                      label: const Text('Copy to note body'),
+                      icon: const Icon(Icons.copy, size: 14),
+                      label: const Text('Copy to body'),
+                      style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
                     ),
                   ),
-                  if (_ocrText.text.isNotEmpty)
-                    IconButton(
-                      onPressed: () {
-                        _ocrText.clear();
-                        setState(() {});
-                      },
-                      icon: const Icon(Icons.clear, size: 18),
-                      tooltip: 'Clear OCR text',
-                    ),
+                  IconButton(
+                    onPressed: () { _ocrText.clear(); setState(() {}); },
+                    icon: const Icon(Icons.clear, size: 16),
+                    visualDensity: VisualDensity.compact,
+                  ),
                 ],
               ),
             ],

@@ -126,18 +126,33 @@ class _SmartViewScreenState extends State<SmartViewScreen> {
         bottom: true,
         child: Column(
           children: [
-            AppBar(
-              title: const Text('Smart View'),
-              actions: [
-                IconButton(
-                  icon: Icon(noteViewIcons[_viewMode]),
-                  onPressed: () {
-                    setState(() {
-                      _viewMode = _viewMode == NoteViewMode.grid ? NoteViewMode.list : NoteViewMode.grid;
-                    });
-                  },
+            SizedBox(
+              height: 56,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.arrow_back),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                    const Expanded(
+                      child: Text(
+                        'Smart View',
+                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(noteViewIcons[_viewMode]),
+                      onPressed: () {
+                        setState(() {
+                          _viewMode = _viewMode == NoteViewMode.grid ? NoteViewMode.list : NoteViewMode.grid;
+                        });
+                      },
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
             Expanded(
               child: Column(
@@ -145,37 +160,40 @@ class _SmartViewScreenState extends State<SmartViewScreen> {
                   _buildCategorySelector(cs),
                   const Divider(height: 1),
                   Expanded(
-                    child: NoteViewsRenderer(
-                      mode: _viewMode,
-                      notes: _filteredNotes,
-                      blobs: widget.blobs,
-                      onTap: _openNote,
-                      onToggleFavorite: (n) async {
-                        if (widget.repo != null) {
-                          await widget.repo!.save(n.copyWith(favorite: !n.favorite));
-                          _selectCategory(_selectedCategory!);
-                        }
-                      },
-                      onTogglePin: (n) async {
-                        if (widget.repo != null) {
-                          await widget.repo!.save(n.copyWith(pinned: !n.pinned));
-                          _selectCategory(_selectedCategory!);
-                        }
-                      },
-                      categories: const {}, // Default empty
-                      hasMore: false,
-                      onLoadMore: () {},
-                      onDelete: (n) {},
-                      onToggleArchive: (n) {},
-                      onToggleLock: (n) {},
-                      onShare: (n) {},
-                      onMove: (n) {},
-                      // Add padding to handle navigation bar
-                      padding: EdgeInsets.fromLTRB(
-                        16,
-                        16,
-                        16,
-                        MediaQuery.of(context).viewPadding.bottom + 64,
+                    child: Padding(
+                      padding: const EdgeInsets.only(bottom: 32),
+                      child: NoteViewsRenderer(
+                        mode: _viewMode,
+                        notes: _filteredNotes,
+                        blobs: widget.blobs,
+                        onTap: _openNote,
+                        onToggleFavorite: (n) async {
+                          if (widget.repo != null) {
+                            await widget.repo!.save(n.copyWith(favorite: !n.favorite));
+                            _selectCategory(_selectedCategory!);
+                          }
+                        },
+                        onTogglePin: (n) async {
+                          if (widget.repo != null) {
+                            await widget.repo!.save(n.copyWith(pinned: !n.pinned));
+                            _selectCategory(_selectedCategory!);
+                          }
+                        },
+                        categories: const {}, // Default empty
+                        hasMore: false,
+                        onLoadMore: () {},
+                        onDelete: (n) {},
+                        onToggleArchive: (n) {},
+                        onToggleLock: (n) {},
+                        onShare: (n) {},
+                        onMove: (n) {},
+                        // Add padding to handle navigation bar
+                        padding: EdgeInsets.fromLTRB(
+                          16,
+                          16,
+                          16,
+                          MediaQuery.of(context).viewPadding.bottom + 80,
+                        ),
                       ),
                     ),
                   ),
@@ -190,10 +208,10 @@ class _SmartViewScreenState extends State<SmartViewScreen> {
 
   Widget _buildCategorySelector(ColorScheme cs) {
     return SizedBox(
-      height: 100,
+      height: 80,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         itemCount: SmartCategory.values.length,
         itemBuilder: (context, index) {
           final cat = SmartCategory.values[index];
@@ -203,16 +221,16 @@ class _SmartViewScreenState extends State<SmartViewScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 4),
             child: InkWell(
               onTap: () => _selectCategory(cat),
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(12),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 200),
-                width: 90,
+                width: 80,
                 decoration: BoxDecoration(
-                  color: isSelected ? cs.primaryContainer : cs.surfaceContainerHighest.withValues(alpha: 0.3),
-                  borderRadius: BorderRadius.circular(16),
+                  color: isSelected ? cs.primaryContainer : cs.surfaceContainerHighest.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(12),
                   border: Border.all(
                     color: isSelected ? cs.primary : Colors.transparent,
-                    width: 2,
+                    width: 1.5,
                   ),
                 ),
                 child: Column(
@@ -220,13 +238,14 @@ class _SmartViewScreenState extends State<SmartViewScreen> {
                   children: [
                     Icon(
                       cat.icon,
+                      size: 20,
                       color: isSelected ? cs.onPrimaryContainer : cs.onSurfaceVariant,
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 2),
                     Text(
-                      cat.label.split(' ')[0], // Short name
+                      cat.label.split(' ')[0],
                       style: TextStyle(
-                        fontSize: 12,
+                        fontSize: 10,
                         fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
                         color: isSelected ? cs.onPrimaryContainer : cs.onSurfaceVariant,
                       ),

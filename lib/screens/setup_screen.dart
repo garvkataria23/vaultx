@@ -222,8 +222,7 @@ class _SetupScreenState extends State<SetupScreen> {
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 460),
               child: ListView(
-                padding: const EdgeInsets.all(24),
-                shrinkWrap: true,
+                padding: const EdgeInsets.fromLTRB(24, 24, 24, 80),
                 children: [
                   const Icon(Icons.security, size: 56),
                   const SizedBox(height: 16),

@@ -218,7 +218,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     if (provider == null) return;
 
     if (!mounted) return;
-    await Navigator.of(context).push(
+    final restored = await Navigator.of(context).push<dynamic>(
       MaterialPageRoute(
         builder: (_) => RestoreScreen(
           authService: widget.authService,
@@ -228,6 +228,11 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
         ),
       ),
     );
+    
+    if (restored != null) {
+      debugPrint('BACKUP_SCREEN: Cloud restore successful, triggering UI refresh');
+      if (widget.onDataChanged != null) await widget.onDataChanged!();
+    }
     
     await _refreshVersions();
     await _manager.refreshAllStorageInfo();
@@ -652,7 +657,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
             ),
           ],
 
-          const SizedBox(height: 40),
+          const SizedBox(height: 120),
         ],
       ),
     ));

@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 import '../models/note.dart';
@@ -8,38 +11,73 @@ class SearchIndexService {
 
   static const _boxName = 'vaultx_search_index';
   Box? _box;
+  Completer<void>? _initCompleter;
 
   Future<void> init() async {
-    _box = await Hive.openBox(_boxName);
+    if (_box?.isOpen == true) return;
+    if (_initCompleter != null) return _initCompleter!.future;
+    
+    _initCompleter = Completer<void>();
+    try {
+      debugPrint('SEARCH_INDEX: opening box...');
+      _box = await Hive.openBox(_boxName);
+      _initCompleter!.complete();
+    } catch (e) {
+      _initCompleter!.completeError(e);
+      _initCompleter = null;
+      rethrow;
+    }
   }
 
-  Box get _b => _box!;
+  Box get _b {
+    final b = _box;
+    if (b == null) {
+      throw StateError('SearchIndexService box is null. Call init() and await it first.');
+    }
+    if (!b.isOpen) {
+      throw StateError('SearchIndexService box is closed.');
+    }
+    return b;
+  }
 
   /// Index a single note — splits title + body + transcript into tokens, maps each to note ID.
   Future<void> indexNote(SecureNote note) async {
-    final tokens = _tokenize('${note.title} ${note.body} ${note.ocrText} ${note.transcript} ${note.summary} ${note.tags.join(' ')}');
+    await init(); // Ensure box is open
+    final content = [
+      note.title,
+      note.body,
+      note.ocrText,
+      note.transcript,
+      note.summary,
+      ...note.tags,
+    ].where((s) => s.isNotEmpty).join(' ');
+    
+    final tokens = _tokenize(content);
     final noteId = note.id;
     for (final token in tokens) {
       final key = 'idx:$token';
-      final existing = _b.get(key, defaultValue: <String>[]) as List<String>;
-      if (!existing.contains(noteId)) {
-        existing.add(noteId);
-        await _b.put(key, existing);
+      final existing = _b.get(key, defaultValue: <String>[]) as List;
+      final ids = existing.cast<String>().toList();
+      if (!ids.contains(noteId)) {
+        ids.add(noteId);
+        await _b.put(key, ids);
       }
     }
   }
 
   /// Remove a note from the index.
   Future<void> removeNote(String id) async {
+    await init();
     final keys = _b.keys.where((k) => k.toString().startsWith('idx:'));
     for (final key in keys) {
-      final existing = _b.get(key, defaultValue: <String>[]) as List<String>;
-      if (existing.contains(id)) {
-        existing.remove(id);
-        if (existing.isEmpty) {
+      final existing = _b.get(key, defaultValue: <String>[]) as List;
+      final ids = existing.cast<String>().toList();
+      if (ids.contains(id)) {
+        ids.remove(id);
+        if (ids.isEmpty) {
           await _b.delete(key);
         } else {
-          await _b.put(key, existing);
+          await _b.put(key, ids);
         }
       }
     }
@@ -47,6 +85,7 @@ class SearchIndexService {
 
   /// Rebuild the entire index from a list of notes.
   Future<void> rebuild(List<SecureNote> notes) async {
+    await init();
     final idxKeys = _b.keys.where((k) => k.toString().startsWith('idx:')).toList();
     for (final k in idxKeys) {
       await _b.delete(k);
@@ -57,7 +96,8 @@ class SearchIndexService {
   }
 
   /// Search the index — returns note IDs that match any token in the query.
-  Set<String> search(String query) {
+  Future<Set<String>> search(String query) async {
+    await init();
     final queryTokens = _tokenize(query);
     if (queryTokens.isEmpty) return {};
     final results = <String>{};
@@ -69,8 +109,8 @@ class SearchIndexService {
         return storedToken.startsWith(token) || token.startsWith(storedToken);
       });
       for (final k in matched) {
-        final ids = _b.get(k, defaultValue: <String>[]) as List<String>;
-        results.addAll(ids);
+        final ids = _b.get(k, defaultValue: <String>[]) as List;
+        results.addAll(ids.cast<String>());
       }
     }
     return results;

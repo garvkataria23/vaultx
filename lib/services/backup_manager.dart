@@ -33,6 +33,19 @@ class BackupManager extends ChangeNotifier {
   final Map<CloudProvider, ProviderState> _states = {};
   final Map<CloudProvider, StorageInfo> _storageInfo = {};
   bool _initialized = false;
+  bool _disposed = false;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  @override
+  void notifyListeners() {
+    if (_disposed) return;
+    super.notifyListeners();
+  }
 
   static const List<CloudProvider> _allProviderTypes = CloudProvider.values;
 

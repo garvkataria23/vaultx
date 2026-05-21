@@ -881,6 +881,8 @@ class BackupService {
         passwordEntriesRestored = await _restorePasswordEntries(
           _normalizeRecordList(passwordEntries),
           mode,
+          mainMasterKey: mainMasterKey,
+          targetMasterKey: targetMasterKey,
         );
 
         components[components.length - 1] = components.last.copyWith(
@@ -937,6 +939,44 @@ class BackupService {
         'attachmentBlobs=$attachmentBlobsRestored, settings=$settingsRestored, '
         'authBundle=$authBundleRestored',
       );
+
+      // ── Sanity Check ───────────────────────────────────────────────────
+      // Never allow: Backup contains notes, Merge succeeds, Vault remains empty
+      final totalBackupNotes = (mainRecords?.length ?? 0) + (hiddenRecords?.length ?? 0);
+      
+      final recordsBox = Hive.box('vaultx_records');
+      final finalMainCount = recordsBox.keys.where((k) => k.toString().startsWith('main:')).length;
+      final finalHiddenCount = recordsBox.keys.where((k) => k.toString().startsWith('hidden:')).length;
+      final totalLocalNotesAfter = finalMainCount + finalHiddenCount;
+
+      _log('RESTORE SANITY CHECK: backupNotes=$totalBackupNotes, localNotesAfter=$totalLocalNotesAfter');
+
+      if (totalBackupNotes > 0 && totalLocalNotesAfter == 0 && mode == RestoreMode.merge) {
+        _log('RESTORE CRITICAL: Backup has $totalBackupNotes notes but vault is empty after merge. Forcing full import...');
+        
+        if (mainRecords != null && mainRecords.isNotEmpty) {
+          mainNotesRestored = await _restoreVaultRecords(
+            _normalizeRecordList(mainRecords),
+            'main',
+            mainMasterKey,
+            RestoreMode.replace, // Force import
+            (_) {},
+            targetMasterKey: targetMasterKey,
+          );
+        }
+        if (hiddenRecords != null && hiddenRecords.isNotEmpty) {
+          hiddenNotesRestored = await _restoreVaultRecords(
+            _normalizeRecordList(hiddenRecords),
+            'hidden',
+            mainMasterKey,
+            RestoreMode.replace, // Force import
+            (_) {},
+            targetMasterKey: targetMasterKey,
+          );
+        }
+        
+        _log('RESTORE FORCED IMPORT COMPLETE: main=$mainNotesRestored, hidden=$hiddenNotesRestored');
+      }
 
       return RestoreResult(
         success: true,
@@ -1785,6 +1825,60 @@ class BackupService {
         .toList();
   }
 
+  bool _isRecordContentDifferent(
+    Map<String, dynamic> backupRecord,
+    Map<String, dynamic> localRecord,
+    Uint8List backupKey,
+    Uint8List localKey,
+    CryptoService crypto,
+    String recordId,
+  ) {
+    // Rule 5: Timestamp invalid -> DO NOT SKIP. Compare content hash/json.
+    final bUpdatedStr = backupRecord['updatedAt'] as String?;
+    final lUpdatedStr = localRecord['updatedAt'] as String?;
+    
+    final bUpdated = bUpdatedStr != null ? DateTime.tryParse(bUpdatedStr) : null;
+    final lUpdated = lUpdatedStr != null ? DateTime.tryParse(lUpdatedStr) : null;
+
+    if (bUpdated == null || lUpdated == null) {
+      _log('RESTORE MERGE DEBUG: UUID=$recordId - timestamp invalid or missing, checking content (Rule 5)');
+    } else {
+      // Optimization: if same salt and same payload and same timestamp, they are identical
+      if (bUpdatedStr == lUpdatedStr && 
+          backupRecord['salt'] == localRecord['salt'] && 
+          jsonEncode(backupRecord['payload']) == jsonEncode(localRecord['payload'])) {
+        return false;
+      }
+    }
+
+    // Rule 4: Backup content different -> UPDATE EXISTING
+    final bClear = _decryptRestoreRecord(backupRecord, backupKey, crypto);
+    final lClear = _decryptRestoreRecord(localRecord, localKey, crypto);
+
+    if (bClear == null || lClear == null) {
+      _log('RESTORE MERGE DEBUG: UUID=$recordId - decryption failed for comparison, assuming different');
+      return true;
+    }
+
+    // Compare essential fields to determine if content differs
+    final bool differ = bClear['title'] != lClear['title'] ||
+                        bClear['body'] != lClear['body'] ||
+                        jsonEncode(bClear['checklist']) != jsonEncode(lClear['checklist']) ||
+                        jsonEncode(bClear['attachments']) != jsonEncode(lClear['attachments']) ||
+                        jsonEncode(bClear['tags']) != jsonEncode(lClear['tags']) ||
+                        bClear['folder'] != lClear['folder'] ||
+                        bClear['type'] != lClear['type'] ||
+                        bClear['deleted'] != lClear['deleted'];
+
+    if (differ) {
+      _log('RESTORE MERGE DEBUG: UUID=$recordId - content differs (Rule 4) - UPDATE planned');
+    } else {
+      _log('RESTORE MERGE DEBUG: UUID=$recordId - content is identical - SKIP (Rule 3)');
+    }
+
+    return differ;
+  }
+
   Future<int> _restoreVaultRecords(
     List<Map<String, dynamic>> records,
     String prefix,
@@ -1797,6 +1891,18 @@ class BackupService {
     final crypto = CryptoService();
     var processed = 0;
     var restored = 0;
+    var skipped = 0;
+    var updated = 0;
+
+    // Rule 1: Local vault count == 0 -> IMPORT ENTIRE BACKUP
+    final localCountBefore = box.keys.where((k) => k.toString().startsWith('$prefix:')).length;
+    _log('RESTORE DEBUG [$prefix]: local count before merge=$localCountBefore');
+    _log('RESTORE DEBUG [$prefix]: backup count=${records.length}');
+
+    final bool forceImport = localCountBefore == 0;
+    if (forceImport && mode == RestoreMode.merge) {
+      _log('RESTORE DEBUG [$prefix]: Local vault is empty. Promoting merge to full import (Rule 1).');
+    }
 
     for (final record in records) {
       final bool isFolderMeta = record['_isFolderMeta'] == true;
@@ -1804,11 +1910,40 @@ class BackupService {
       if (recordId == null) continue;
       final key = isFolderMeta ? '$prefix:folder_metadata:$recordId' : '$prefix:$recordId';
 
-      if (mode == RestoreMode.merge && box.containsKey(key)) {
-        _log('RESTORE: skipped existing $prefix ${isFolderMeta ? "folder" : "vault"} record $recordId');
+      bool shouldRestore = true;
+      String decisionReason = 'INSERT (Rule 2)';
+
+      if (mode == RestoreMode.merge && !forceImport && box.containsKey(key)) {
+        final localRaw = box.get(key) as Map?;
+        if (localRaw != null) {
+          final isDifferent = _isRecordContentDifferent(
+            record, 
+            Map<String, dynamic>.from(localRaw), 
+            mainMasterKey, 
+            targetMasterKey ?? mainMasterKey, 
+            crypto,
+            recordId,
+          );
+          
+          if (!isDifferent) {
+            shouldRestore = false;
+            decisionReason = 'KEEP LOCAL (Rule 3) - identical content';
+            skipped++;
+          } else {
+            shouldRestore = true;
+            decisionReason = 'UPDATE EXISTING (Rule 4) - content differs';
+            updated++;
+          }
+        }
+      }
+
+      if (!shouldRestore) {
+        _log('RESTORE MERGE DECISION: UUID=$recordId -> $decisionReason');
         processed++;
         continue;
       }
+
+      _log('RESTORE MERGE DECISION: UUID=$recordId -> $decisionReason');
 
       if (isFolderMeta) {
         if (record.containsKey('name')) {
@@ -1822,7 +1957,9 @@ class BackupService {
         if (targetMasterKey != null && !_keysEqual(targetMasterKey, mainMasterKey)) {
           try {
             final salt = record['salt'] as String;
-            final payload = record['payload'] as Map<String, dynamic>;
+            final payload = record['payload'] is Map 
+                ? Map<String, dynamic>.from(record['payload'] as Map)
+                : <String, dynamic>{};
             final oldKey = crypto.deriveRecordKey(mainMasterKey, recordId, salt);
             final plaintext = crypto.decryptJson(payload, oldKey);
             crypto.wipe(oldKey);
@@ -1836,17 +1973,41 @@ class BackupService {
           }
         }
         await box.put(key, record);
-        await AuditLog.write('Restored $prefix vault record $recordId');
+        await AuditLog.write('Restored $prefix vault record $recordId ($decisionReason)');
         restored++;
       } else {
-        _log('RESTORE: invalid $prefix vault record $recordId');
+        _log('RESTORE: invalid $prefix vault record $recordId - missing essential fields');
       }
 
       processed++;
       if (processed % 5 == 0) onProgress(processed);
     }
     onProgress(records.length);
+
+    final localCountAfter = box.keys.where((k) => k.toString().startsWith('$prefix:')).length;
+    _log('RESTORE DEBUG [$prefix]: merge cycle complete');
+    _log('  final local count: $localCountAfter');
+    _log('  inserted count: ${restored - updated}');
+    _log('  updated count: $updated');
+    _log('  skipped count: $skipped');
+
     return restored;
+  }
+
+  Map<String, dynamic>? _decryptRestoreRecord(Map record, Uint8List key, CryptoService crypto) {
+    try {
+      final id = record['id'] as String?;
+      final salt = record['salt'] as String?;
+      final payload = record['payload'] as Map?;
+      if (id == null || salt == null || payload == null) return null;
+      
+      final recordKey = crypto.deriveRecordKey(key, id, salt);
+      final clear = crypto.decryptJson(Map<String, dynamic>.from(payload), recordKey);
+      crypto.wipe(recordKey);
+      return clear;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<int> _restoreDriveMetadata(
@@ -1855,6 +2016,18 @@ class BackupService {
   ) async {
     final box = Hive.box('vaultx_drive');
     var restored = 0;
+    var skipped = 0;
+    var updated = 0;
+
+    final localCountBefore = box.keys.length; 
+    _log('RESTORE DEBUG [drive]: local count before merge=$localCountBefore');
+    _log('RESTORE DEBUG [drive]: backup count=${records.length}');
+
+    final bool forceImport = localCountBefore == 0;
+    if (forceImport && mode == RestoreMode.merge) {
+      _log('RESTORE DEBUG [drive]: Local vault is empty. Promoting merge to full import (Rule 1).');
+    }
+
     for (final record in records) {
       final bool isFolderMeta = record['_isFolderMeta'] == true;
       final recordId = isFolderMeta ? record['name']?.toString() : record['id']?.toString();
@@ -1864,10 +2037,40 @@ class BackupService {
       if (record['_prefix'] == 'hidden') prefix = 'hidden';
       final key = isFolderMeta ? '$prefix:folder_metadata:$recordId' : '$prefix:$recordId';
 
-      if (mode == RestoreMode.merge && box.containsKey(key)) {
-        _log('RESTORE: skipped existing drive ${isFolderMeta ? "folder" : "metadata"} $key');
+      bool shouldRestore = true;
+      String decisionReason = 'INSERT (Rule 2)';
+
+      if (mode == RestoreMode.merge && !forceImport && box.containsKey(key)) {
+        if (isFolderMeta) {
+          shouldRestore = false;
+          decisionReason = 'KEEP LOCAL - folder meta already exists';
+          skipped++;
+        } else {
+           final localRaw = box.get(key) as Map?;
+           if (localRaw != null) {
+              // Compare simple fields for drive metadata
+              final bUp = record['updatedAt'] as String?;
+              final lUp = localRaw['updatedAt'] as String?;
+              if (bUp != null && lUp != null && bUp == lUp && 
+                  jsonEncode(record) == jsonEncode(localRaw)) {
+                shouldRestore = false;
+                decisionReason = 'KEEP LOCAL (Rule 3) - identical metadata';
+                skipped++;
+              } else {
+                shouldRestore = true;
+                decisionReason = 'UPDATE EXISTING (Rule 4) - metadata differs';
+                updated++;
+              }
+           }
+        }
+      }
+
+      if (!shouldRestore) {
+        _log('RESTORE MERGE DECISION (DRIVE): UUID=$recordId -> $decisionReason');
         continue;
       }
+
+      _log('RESTORE MERGE DECISION (DRIVE): UUID=$recordId -> $decisionReason');
 
       try {
         if (isFolderMeta) {
@@ -1884,6 +2087,10 @@ class BackupService {
         _log('RESTORE: failed to restore drive metadata $recordId: $e');
       }
     }
+
+    final localCountAfter = box.keys.length;
+    _log('RESTORE DEBUG [drive]: merge complete. final=$localCountAfter, inserted=${restored-updated}, updated=$updated, skipped=$skipped');
+
     return restored;
   }
 
@@ -1897,6 +2104,9 @@ class BackupService {
     final docDir = await getApplicationDocumentsDirectory();
     var processed = 0;
     var restored = 0;
+    var skipped = 0;
+
+    _log('RESTORE DEBUG [$blobType]: backup count=${blobs.length}');
 
     for (final blob in blobs) {
       try {
@@ -1920,7 +2130,11 @@ class BackupService {
         await dir.create(recursive: true);
 
         final blobPath = '${dir.path}/$blobId.vxblob';
-        if (mode == RestoreMode.merge && File(blobPath).existsSync()) continue;
+        if (mode == RestoreMode.merge && File(blobPath).existsSync()) {
+          skipped++;
+          processed++;
+          continue;
+        }
 
         await File(blobPath).writeAsBytes(data, flush: true);
         await AuditLog.write('Restored $blobType blob $blobId');
@@ -1933,6 +2147,9 @@ class BackupService {
       if (processed % 3 == 0) onProgress(processed);
     }
     onProgress(blobs.length);
+
+    _log('RESTORE DEBUG [$blobType]: skipped count=$skipped, inserted count=$restored');
+
     return restored;
   }
 
@@ -1940,24 +2157,92 @@ class BackupService {
 
   Future<int> _restorePasswordEntries(
     List<Map<String, dynamic>> entries,
-    RestoreMode mode,
-  ) async {
+    RestoreMode mode, {
+    Uint8List? mainMasterKey,
+    Uint8List? targetMasterKey,
+  }) async {
     final box = Hive.box('vaultx_passwords');
+    final crypto = CryptoService();
     var restored = 0;
+    var skipped = 0;
+    var updated = 0;
+
+    final localCountBefore = box.keys.length;
+    _log('RESTORE DEBUG [passwords]: local count before merge=$localCountBefore');
+    _log('RESTORE DEBUG [passwords]: backup count=${entries.length}');
+
+    final bool forceImport = localCountBefore == 0;
+    if (forceImport && mode == RestoreMode.merge) {
+      _log('RESTORE DEBUG [passwords]: Local vault is empty. Promoting merge to full import (Rule 1).');
+    }
+
     for (final entry in entries) {
       final entryId = entry['id'] as String;
       // Detect prefix from the stored data
       final prefix = entry['_prefix'] as String? ?? 'main_pw';
       final key = '$prefix:$entryId';
 
-      if (mode == RestoreMode.merge && box.containsKey(key)) continue;
+      bool shouldRestore = true;
+      String decisionReason = 'INSERT (Rule 2)';
+
+      if (mode == RestoreMode.merge && !forceImport && box.containsKey(key)) {
+        final localRaw = box.get(key) as Map?;
+        if (localRaw != null) {
+          final isDifferent = _isRecordContentDifferent(
+            entry, 
+            Map<String, dynamic>.from(localRaw), 
+            mainMasterKey ?? Uint8List(0), 
+            targetMasterKey ?? mainMasterKey ?? Uint8List(0), 
+            crypto,
+            entryId,
+          );
+          
+          if (!isDifferent) {
+            shouldRestore = false;
+            decisionReason = 'KEEP LOCAL (Rule 3) - identical content';
+            skipped++;
+          } else {
+            shouldRestore = true;
+            decisionReason = 'UPDATE EXISTING (Rule 4) - content differs';
+            updated++;
+          }
+        }
+      }
+
+      if (!shouldRestore) {
+        _log('RESTORE MERGE DECISION (PW): UUID=$entryId -> $decisionReason');
+        continue;
+      }
+
+      _log('RESTORE MERGE DECISION (PW): UUID=$entryId -> $decisionReason');
 
       if (entry.containsKey('salt') && entry.containsKey('payload')) {
+        // Re-encrypt if keys differ
+        if (mainMasterKey != null && targetMasterKey != null && !_keysEqual(targetMasterKey, mainMasterKey)) {
+           try {
+              final salt = entry['salt'] as String;
+              final payload = entry['payload'] is Map 
+                  ? Map<String, dynamic>.from(entry['payload'] as Map)
+                  : <String, dynamic>{};
+              final oldKey = crypto.deriveRecordKey(mainMasterKey, entryId, salt);
+              final plaintext = crypto.decryptJson(payload, oldKey);
+              crypto.wipe(oldKey);
+              final newKey = crypto.deriveRecordKey(targetMasterKey, entryId, salt);
+              entry['payload'] = crypto.encryptJson(plaintext, newKey);
+              crypto.wipe(newKey);
+           } catch (e) {
+              _log('RESTORE: failed to re-encrypt password entry $entryId: $e');
+              continue;
+           }
+        }
         await box.put(key, entry);
         restored++;
       }
     }
-    _log('RESTORE passwordEntries: $restored entries restored');
+
+    final localCountAfter = box.keys.length;
+    _log('RESTORE DEBUG [passwords]: merge complete. final=$localCountAfter, inserted=${restored-updated}, updated=$updated, skipped=$skipped');
+
     return restored;
   }
 

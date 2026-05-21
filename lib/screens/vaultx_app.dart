@@ -30,6 +30,7 @@ Future<void> runVaultX() async {
   await Hive.openBox('vaultx_passwords');
   await Hive.openBox('vaultx_decoy_notes');
   await Hive.openBox('vaultx_decoy_drive');
+  await SearchIndexService.instance.init();
   await SecurityPlatform.enableScreenProtection();
   final appState = VaultAppState();
   await appState.init();
