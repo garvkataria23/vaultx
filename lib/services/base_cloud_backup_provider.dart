@@ -185,9 +185,20 @@ abstract class BaseCloudBackupProvider implements CloudStorageProvider {
           return false;
         }
         debugPrint('UPLOAD: VERIFY SUCCESS (${verifyResult.componentsChecked} components checked)');
+        await BackupState.save(BackupState.load().copyWith(
+          lastSyncAt: DateTime.now(),
+        ));
+        debugPrint('SYNC TIMESTAMP UPDATED');
       }
 
       await recordBackupTime();
+      await BackupState.save(BackupState.load().copyWith(
+        lastBackupAt: DateTime.now(),
+        lastBackupSizeBytes: totalSize,
+        lastBackupStatus: 'synced',
+        lastBackupProvider: providerName,
+      ));
+      debugPrint('BACKUP TIMESTAMP UPDATED');
       debugPrint('UPLOAD: success (${totalSize}B)');
       return true;
     } catch (e, st) {

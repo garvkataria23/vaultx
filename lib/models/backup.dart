@@ -94,6 +94,7 @@ class ProviderState {
   final bool connected;
   final String? email;
   final String? lastBackupAt;
+  final String? lastSyncAt;
   final bool uploading;
   final bool restoring;
   final bool isReconnecting;
@@ -110,6 +111,7 @@ class ProviderState {
     this.connected = false,
     this.email,
     this.lastBackupAt,
+    this.lastSyncAt,
     this.uploading = false,
     this.restoring = false,
     this.isReconnecting = false,
@@ -127,6 +129,7 @@ class ProviderState {
     bool? connected,
     String? email,
     String? lastBackupAt,
+    String? lastSyncAt,
     bool? uploading,
     bool? restoring,
     bool? isReconnecting,
@@ -144,6 +147,7 @@ class ProviderState {
         connected: connected ?? this.connected,
         email: email ?? this.email,
         lastBackupAt: lastBackupAt ?? this.lastBackupAt,
+        lastSyncAt: lastSyncAt ?? this.lastSyncAt,
         uploading: uploading ?? this.uploading,
         restoring: restoring ?? this.restoring,
         isReconnecting: isReconnecting ?? this.isReconnecting,
@@ -433,6 +437,10 @@ class BackupState {
   final String? lastError;
   final int totalBackupsCreated;
   final int totalRestoresPerformed;
+  final DateTime? lastSyncAt;
+  final String? lastBackupProvider;
+  final int lastBackupFileCount;
+  final String? lastBackupStatus;
 
   const BackupState({
     this.lastBackupAt,
@@ -443,6 +451,10 @@ class BackupState {
     this.lastError,
     this.totalBackupsCreated = 0,
     this.totalRestoresPerformed = 0,
+    this.lastSyncAt,
+    this.lastBackupProvider,
+    this.lastBackupFileCount = 0,
+    this.lastBackupStatus,
   });
 
   BackupHealth get health {
@@ -461,6 +473,10 @@ class BackupState {
     String? lastError,
     int? totalBackupsCreated,
     int? totalRestoresPerformed,
+    DateTime? lastSyncAt,
+    String? lastBackupProvider,
+    int? lastBackupFileCount,
+    String? lastBackupStatus,
     bool clearError = false,
     bool clearInProgress = false,
   }) =>
@@ -473,6 +489,10 @@ class BackupState {
         lastError: clearError ? null : (lastError ?? this.lastError),
         totalBackupsCreated: totalBackupsCreated ?? this.totalBackupsCreated,
         totalRestoresPerformed: totalRestoresPerformed ?? this.totalRestoresPerformed,
+        lastSyncAt: lastSyncAt ?? this.lastSyncAt,
+        lastBackupProvider: lastBackupProvider ?? this.lastBackupProvider,
+        lastBackupFileCount: lastBackupFileCount ?? this.lastBackupFileCount,
+        lastBackupStatus: lastBackupStatus ?? this.lastBackupStatus,
       );
 
   Map<String, dynamic> toJson() => {
@@ -484,6 +504,10 @@ class BackupState {
     'lastError': lastError,
     'totalBackupsCreated': totalBackupsCreated,
     'totalRestoresPerformed': totalRestoresPerformed,
+    'lastSyncAt': lastSyncAt?.toUtc().toIso8601String(),
+    'lastBackupProvider': lastBackupProvider,
+    'lastBackupFileCount': lastBackupFileCount,
+    'lastBackupStatus': lastBackupStatus,
   };
 
   factory BackupState.fromJson(Map<String, dynamic> json) => BackupState(
@@ -495,6 +519,10 @@ class BackupState {
     lastError: json['lastError'] as String?,
     totalBackupsCreated: json['totalBackupsCreated'] as int? ?? 0,
     totalRestoresPerformed: json['totalRestoresPerformed'] as int? ?? 0,
+    lastSyncAt: json['lastSyncAt'] != null ? DateTime.tryParse(json['lastSyncAt'] as String) : null,
+    lastBackupProvider: json['lastBackupProvider'] as String?,
+    lastBackupFileCount: json['lastBackupFileCount'] as int? ?? 0,
+    lastBackupStatus: json['lastBackupStatus'] as String?,
   );
 
   static const _hiveKey = 'vaultxBackupState';

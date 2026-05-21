@@ -26,6 +26,7 @@ class MegaClient private constructor(
     var onLogoutResult: ((Boolean, String?) -> Unit)? = null
     var onTransferStart: ((String, Long) -> Unit)? = null
     var onCreateFolderResult: ((Boolean, String?, MegaNode?) -> Unit)? = null
+    var onAccountDetailsResult: ((Boolean, String?, Long, Long) -> Unit)? = null
 
     var megaReady: Boolean = false
         private set
@@ -104,6 +105,19 @@ class MegaClient private constructor(
                         if (!ok) "Create folder failed: ${e.errorString} (code=${e.errorCode})" else null,
                         folder
                     )
+                }
+                MegaRequest.TYPE_ACCOUNT_DETAILS -> {
+                    val ok = e.errorCode == MegaError.API_OK
+                    if (ok) {
+                        try {
+                            val details = request.megaAccountDetails
+                            onAccountDetailsResult?.invoke(true, null, details.storageUsed, details.storageMax)
+                        } catch (ex: Exception) {
+                            onAccountDetailsResult?.invoke(false, "Failed to parse account details: ${ex.message}", 0, 0)
+                        }
+                    } else {
+                        onAccountDetailsResult?.invoke(false, "Account details failed: ${e.errorString} (code=${e.errorCode})", 0, 0)
+                    }
                 }
             }
         }

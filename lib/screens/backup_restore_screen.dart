@@ -430,8 +430,8 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final lastBackup = BackupState.load().lastBackupAt;
-    final backupInProgress = BackupState.load().isInProgress;
+    final backupState = BackupState.load();
+    final backupInProgress = backupState.isInProgress;
     
     final inProgress = backupInProgress || 
         _manager.getState(CloudProvider.googleDrive).uploading ||
@@ -453,7 +453,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
         padding: const EdgeInsets.all(16),
         children: [
           // ── Backup Status Card ─────────────────────────────────────────
-          _buildStatusCard(cs, lastBackup, backupInProgress),
+          _buildStatusCard(cs, backupState, backupInProgress),
           const SizedBox(height: 24),
 
           // ── Cloud Providers ────────────────────────────────────────────
@@ -665,59 +665,233 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     );
   }
 
-  Widget _buildStatusCard(ColorScheme cs, DateTime? lastBackup, bool inProgress) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: inProgress ? cs.primaryContainer.withValues(alpha: 0.3) : cs.surfaceContainerHighest.withValues(alpha: 0.3),
+  String _relativeTime(DateTime? dt) {
+    if (dt == null) return 'Never';
+    final diff = DateTime.now().toUtc().difference(dt.toUtc());
+    if (diff.inSeconds < 60) return 'Just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes} min${diff.inMinutes == 1 ? '' : 's'} ago';
+    if (diff.inHours < 24) return '${diff.inHours} hr${diff.inHours == 1 ? '' : 's'} ago';
+    if (diff.inDays < 2) return 'Yesterday';
+    if (diff.inDays < 30) return '${diff.inDays} days ago';
+    if (diff.inDays < 365) return '${(diff.inDays / 30).floor()} months ago';
+    return '${(diff.inDays / 365).floor()} years ago';
+  }
+
+  Widget _buildStatusCard(ColorScheme cs, BackupState state, bool inProgress) {
+    final status = state.lastBackupStatus;
+    final statusColor = inProgress
+        ? cs.tertiary
+        : status == 'synced'
+            ? Colors.green
+            : status == 'failed'
+                ? Colors.red
+                : cs.onSurfaceVariant;
+    final statusIcon = inProgress
+        ? Icons.sync
+        : status == 'synced'
+            ? Icons.cloud_done
+            : status == 'failed'
+                ? Icons.cloud_off
+                : Icons.cloud_outlined;
+    final statusLabel = inProgress
+        ? 'Syncing'
+        : status == 'synced'
+            ? 'Synced'
+            : status == 'failed'
+                ? 'Failed'
+                : 'Never Backed Up';
+
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: inProgress ? cs.primary.withValues(alpha: 0.2) : cs.outlineVariant.withValues(alpha: 0.3)),
+        side: BorderSide(
+          color: inProgress
+              ? cs.primary.withValues(alpha: 0.3)
+              : cs.outlineVariant.withValues(alpha: 0.5),
+        ),
       ),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  color: inProgress ? cs.primary : cs.primary.withValues(alpha: 0.1),
-                  shape: BoxShape.circle,
+      color: inProgress
+          ? cs.primaryContainer.withValues(alpha: 0.2)
+          : cs.surfaceContainerHighest.withValues(alpha: 0.2),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Status row
+            Row(
+              children: [
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: statusColor.withValues(alpha: 0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(statusIcon, color: statusColor, size: 24),
                 ),
-                child: Icon(
-                  inProgress ? Icons.sync : Icons.cloud_done_outlined,
-                  color: inProgress ? cs.onPrimary : cs.primary,
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            width: 10,
+                            height: 10,
+                            decoration: BoxDecoration(
+                              color: statusColor,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            statusLabel,
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                              color: statusColor,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        state.lastBackupAt == null
+                            ? 'No backups found yet'
+                            : 'Last: ${_relativeTime(state.lastBackupAt)}',
+                        style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      inProgress ? 'Backup in Progress...' : 'Backup Status',
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                    ),
-                    Text(
-                      lastBackup == null 
-                        ? 'No backups found yet' 
-                        : 'Last run: ${DateFormat('MMM d, HH:mm').format(lastBackup.toLocal())}',
-                      style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant),
-                    ),
-                  ],
-                ),
+              ],
+            ),
+            // Details
+            if (state.lastBackupAt != null) ...[
+              const SizedBox(height: 20),
+              Divider(height: 1, color: cs.outlineVariant.withValues(alpha: 0.3)),
+              const SizedBox(height: 16),
+              _statusRow(cs, 'Last Backup', _relativeTime(state.lastBackupAt)),
+              const SizedBox(height: 8),
+              _statusRow(cs, 'Last Sync', _relativeTime(state.lastSyncAt)),
+              const SizedBox(height: 8),
+              _statusRow(cs, 'Backup Size', formatBytes(state.lastBackupSizeBytes)),
+              const SizedBox(height: 8),
+              _statusRow(cs, 'Files Backed Up', '${state.lastBackupFileCount} items'),
+              const SizedBox(height: 8),
+              _statusRow(cs, 'Provider', state.lastBackupProvider ?? '—'),
+              const SizedBox(height: 8),
+              _statusRow(cs, 'Auto Backup', _autoBackup ? 'ON' : 'OFF'),
+              const SizedBox(height: 8),
+              _statusRow(cs, 'Backup Folder', 'VaultX_Backups'),
+            ],
+            if (inProgress) ...[
+              const SizedBox(height: 20),
+              LinearProgressIndicator(
+                backgroundColor: cs.primary.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(4),
               ),
             ],
-          ),
-          if (inProgress) ...[
-            const SizedBox(height: 20),
-            LinearProgressIndicator(
-              backgroundColor: cs.primary.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(4),
+            // View Details button
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () => _showBackupDetails(state),
+                icon: const Icon(Icons.info_outline, size: 18),
+                label: const Text('View Backup Details'),
+                style: OutlinedButton.styleFrom(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
             ),
           ],
-        ],
+        ),
       ),
+    );
+  }
+
+  Widget _statusRow(ColorScheme cs, String label, String value) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label, style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant)),
+        Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+      ],
+    );
+  }
+
+  void _showBackupDetails(BackupState state) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        final cs = Theme.of(ctx).colorScheme;
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: cs.outlineVariant,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Text('Backup Details', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: cs.onSurface)),
+                const SizedBox(height: 24),
+                _detailRow(cs, 'Last Backup Provider', state.lastBackupProvider ?? '—'),
+                const SizedBox(height: 12),
+                _detailRow(cs, 'Last Backup', state.lastBackupAt != null
+                    ? DateFormat('MMM d, yyyy • h:mm a').format(state.lastBackupAt!.toLocal())
+                    : 'Never'),
+                const SizedBox(height: 12),
+                _detailRow(cs, 'Last Sync', state.lastSyncAt != null
+                    ? DateFormat('MMM d, yyyy • h:mm a').format(state.lastSyncAt!.toLocal())
+                    : 'Never'),
+                const SizedBox(height: 12),
+                _detailRow(cs, 'Backup Size', formatBytes(state.lastBackupSizeBytes)),
+                const SizedBox(height: 12),
+                _detailRow(cs, 'Items Backed Up', '${state.lastBackupFileCount} items'),
+                const SizedBox(height: 12),
+                _detailRow(cs, 'Verification Status', state.lastSyncAt != null ? 'Verified' : 'Not verified'),
+                const SizedBox(height: 12),
+                _detailRow(cs, 'Cloud Folder', 'VaultX_Backups'),
+                const SizedBox(height: 24),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _detailRow(ColorScheme cs, String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 140,
+          child: Text(label, style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant)),
+        ),
+        Expanded(
+          child: Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+        ),
+      ],
     );
   }
 

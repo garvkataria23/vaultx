@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 import '../models/backup.dart';
 import '../services/backup_manager.dart';
@@ -71,12 +72,14 @@ class _ProviderCardState extends State<ProviderCard>
   String _formatTimestamp(DateTime? dt) {
     if (dt == null) return 'Never';
     final now = DateTime.now();
-    final diff = now.difference(dt);
-    if (diff.inMinutes < 1) return 'Just now';
-    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-    if (diff.inHours < 24) return '${diff.inHours}h ago';
-    if (diff.inDays < 7) return '${diff.inDays}d ago';
-    return '${dt.month}/${dt.day}/${dt.year}';
+    final localDt = dt.toLocal();
+    final today = DateTime(now.year, now.month, now.day);
+    final yesterday = today.subtract(const Duration(days: 1));
+    final dateDay = DateTime(localDt.year, localDt.month, localDt.day);
+    final time = DateFormat('h:mm a').format(localDt);
+    if (dateDay == today) return 'Today, $time';
+    if (dateDay == yesterday) return 'Yesterday, $time';
+    return DateFormat('d MMM yyyy, h:mm a').format(localDt);
   }
 
   String _getMegaStatusText(MegaConnectionState? state) {
@@ -209,7 +212,9 @@ class _ProviderCardState extends State<ProviderCard>
                   children: [
                     _StatItem(
                       label: 'Last Sync',
-                      value: _formatTimestamp(DateTime.tryParse(state.lastBackupAt ?? '')),
+                      value: _formatTimestamp(DateTime.tryParse(
+                        state.lastSyncAt ?? state.lastBackupAt ?? '',
+                      )),
                       icon: Icons.history,
                     ),
                     _StatItem(

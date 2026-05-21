@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 
 import '../models/auth.dart';
 import '../models/backup.dart';
@@ -44,9 +45,14 @@ class BackupManager extends ChangeNotifier {
     for (final type in _allProviderTypes) {
       final provider = _createProvider(type);
       _providers[type] = provider;
+      final hiveKey = type == CloudProvider.googleDrive ? 'lastGoogleBackupAt' : 'lastMegaBackupAt';
+      final syncHiveKey = type == CloudProvider.googleDrive ? 'lastGoogleSyncAt' : 'lastMegaSyncAt';
+      final box = Hive.box('vaultx_settings');
       _states[type] = ProviderState(
         provider: type,
         enabled: CloudProvider.loadEnabled().contains(type),
+        lastBackupAt: box.get(hiveKey) as String?,
+        lastSyncAt: box.get(syncHiveKey) as String?,
       );
     }
 
@@ -287,6 +293,7 @@ class BackupManager extends ChangeNotifier {
       };
 
       _updateState(type, uploadPhase: 'Collecting data...');
+      int capturedFileCount = 0;
       final ok = await provider.uploadBackup(
         ({bool compressMedia = false}) async {
           final result = await backupService.createBackup(
@@ -295,6 +302,11 @@ class BackupManager extends ChangeNotifier {
           
           final manifest = result.manifest;
           final counts = manifest.counts;
+          capturedFileCount = (counts['mainNoteCount'] as int? ?? 0) +
+              (counts['hiddenNoteCount'] as int? ?? 0) +
+              (counts['driveFileCount'] as int? ?? 0) +
+              (counts['attachmentBlobCount'] as int? ?? 0) +
+              (counts['passwordEntryCount'] as int? ?? 0);
           debugPrint('BACKUP_MANAGER: Collected items for $type:');
           debugPrint(' - Main Notes: ${counts['mainNoteCount'] ?? 0}');
           debugPrint(' - Hidden Notes: ${counts['hiddenNoteCount'] ?? 0}');
@@ -315,13 +327,25 @@ class BackupManager extends ChangeNotifier {
 
       if (ok) {
         debugPrint('BACKUP_MANAGER: Upload and verification successful for $type');
+        // Save file count from manifest
+        await BackupState.save(BackupState.load().copyWith(
+          lastBackupFileCount: capturedFileCount,
+        ));
+        debugPrint('STATUS SAVED');
         // Refresh storage info after successful backup
         _refreshStorageInfo(type);
+        final nowIso = DateTime.now().toUtc().toIso8601String();
+        final syncHiveKey = type == CloudProvider.googleDrive ? 'lastGoogleSyncAt' : 'lastMegaSyncAt';
+        final hiveKey = type == CloudProvider.googleDrive ? 'lastGoogleBackupAt' : 'lastMegaBackupAt';
+        final box = Hive.box('vaultx_settings');
+        await box.put(syncHiveKey, nowIso);
+        await box.put(hiveKey, nowIso);
         _updateState(type,
           uploading: false,
           uploadProgress: 1.0,
           uploadPhase: null,
-          lastBackupAt: DateTime.now().toUtc().toIso8601String(),
+          lastBackupAt: nowIso,
+          lastSyncAt: nowIso,
           clearError: true,
         );
       } else {
@@ -408,10 +432,16 @@ class BackupManager extends ChangeNotifier {
     if (provider == null) return;
 
     await provider.signOut();
+    final syncHiveKey = type == CloudProvider.googleDrive ? 'lastGoogleSyncAt' : 'lastMegaSyncAt';
+    final hiveKey = type == CloudProvider.googleDrive ? 'lastGoogleBackupAt' : 'lastMegaBackupAt';
+    final box = Hive.box('vaultx_settings');
+    await box.delete(syncHiveKey);
+    await box.delete(hiveKey);
     _updateState(type,
       connected: false,
       email: null,
       lastBackupAt: null,
+      lastSyncAt: null,
       error: null,
     );
     _storageInfo.remove(type);
@@ -456,6 +486,7 @@ class BackupManager extends ChangeNotifier {
     bool? connected,
     String? email,
     String? lastBackupAt,
+    String? lastSyncAt,
     bool? uploading,
     bool? restoring,
     bool? isReconnecting,
@@ -481,6 +512,7 @@ class BackupManager extends ChangeNotifier {
       connected: connected,
       email: email,
       lastBackupAt: lastBackupAt,
+      lastSyncAt: lastSyncAt,
       uploading: uploading,
       restoring: restoring,
       isReconnecting: isReconnecting,
