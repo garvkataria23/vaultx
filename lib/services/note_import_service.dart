@@ -78,32 +78,57 @@ class NoteImportService {
       );
 
       if (picked == null || picked.files.isEmpty) {
-        debugPrint('[NoteImportService] No file picked or picker cancelled');
+        debugPrint('[ZIP IMPORT] No file picked or picker cancelled');
         return stats;
       }
 
       final fileName = picked.files.single.name;
-      debugPrint('[NoteImportService] Starting import of $fileName');
+      final filePath = picked.files.single.path;
+      debugPrint('[ZIP IMPORT] Start file=$fileName path=$filePath');
+
+      if (filePath == null) {
+        debugPrint('[ZIP IMPORT] ERROR: file path is null (content URI or picker issue)');
+        onProgress(ImportStage.failed, 1.0, 'Cannot access selected file. Try a different file picker.');
+        return stats;
+      }
 
       onProgress(ImportStage.extracting, 0.1, 'Extracting archive...');
-      final file = File(picked.files.single.path!);
+      final file = File(filePath);
+      final fileExists = await file.exists();
+      debugPrint('[ZIP IMPORT] File exists=$fileExists');
+
+      if (!fileExists) {
+        debugPrint('[ZIP IMPORT] ERROR: file not found at path=$filePath');
+        onProgress(ImportStage.failed, 1.0, 'Selected file no longer exists.');
+        return stats;
+      }
+
       final bytes = await file.readAsBytes();
-      debugPrint('[NoteImportService] Read ${bytes.length} bytes from file');
-      
+      debugPrint('[ZIP IMPORT] Read bytes success size=${bytes.length}');
+
       // Decoding can be heavy, but archive package is sync. 
       // For very large ZIPs, this might still block UI briefly, so we use compute.
-      final archive = await compute(_decodeZip, bytes);
-      debugPrint('[NoteImportService] Decoded ZIP archive with ${archive.length} entries');
+      Archive archive;
+      try {
+        archive = await compute(_decodeZip, bytes);
+        debugPrint('[ZIP IMPORT] ZIP opened entries=${archive.length}');
+      } catch (e, st) {
+        debugPrint('[ZIP IMPORT] ZIP DECODE ERROR: $e\n$st');
+        onProgress(ImportStage.failed, 1.0, 'Invalid or corrupted ZIP file.');
+        return stats;
+      }
       
       // ── Native VaultX Backup Detection ───────────────────────────────────
       final isNativeBackup = archive.files.any((f) => f.name == 'manifest.json');
+      debugPrint('[ZIP IMPORT] manifest.json found=$isNativeBackup');
       if (isNativeBackup) {
         onProgress(ImportStage.reading, 0.2, 'Native backup detected...');
-        return _handleNativeRestore(picked.files.single.path!, onProgress, stopwatch);
+        return _handleNativeRestore(filePath, onProgress, stopwatch);
       }
 
       // ── Full Structured Export Detection ──────────────────────────────────
       final isFullExport = archive.files.any((f) => f.name.contains('vault_data.json'));
+      debugPrint('[ZIP IMPORT] Full export detected=$isFullExport');
       if (isFullExport) {
         onProgress(ImportStage.reading, 0.2, 'Full export detected...');
         return _handleFullRestore(archive, onProgress, stopwatch);
@@ -235,7 +260,8 @@ class NoteImportService {
       
     } catch (e, st) {
       onProgress(ImportStage.failed, 1.0, 'Import failed: $e');
-      debugPrint('[NoteImportService] Critical import error: $e\n$st');
+      debugPrint('[ZIP IMPORT] CRITICAL ERROR: $e');
+      debugPrint('[ZIP IMPORT] Stack trace: $st');
     }
 
     return stats;
@@ -250,16 +276,23 @@ class NoteImportService {
     try {
       if (_repo == null) throw Exception('Repository not available');
 
-      // 1. Extract the structured backup
       onProgress(ImportStage.extracting, 0.3, 'Extracting native backup...');
+      debugPrint('[ZIP IMPORT] _handleNativeRestore start path=$path');
       final backupData = await ArchiveService.extractArchive(path);
+      debugPrint('[ZIP IMPORT] Archive extract success keys=${backupData.keys}');
 
-      // 2. Perform the restore using BackupService
+      final manifestJson = backupData['manifest'];
+      if (manifestJson == null) {
+        throw Exception('manifest.json missing in backup archive');
+      }
+      debugPrint('[ZIP IMPORT] JSON parsed manifest present');
+
       onProgress(ImportStage.importing, 0.5, 'Restoring vault data...');
+      debugPrint('[ZIP IMPORT] Creating BackupService for restore');
       final backupService = BackupService(
         masterKey: _repo.masterKey,
         kind: _repo.kind,
-        authService: VaultAuthService(), // Dummy for restore logic
+        authService: VaultAuthService(),
         onProgress: (p) {
           final processed = p.components.fold<int>(0, (sum, c) => sum + c.itemsProcessed);
           final total = p.components.fold<int>(0, (sum, c) => sum + c.totalItems);
@@ -268,12 +301,14 @@ class NoteImportService {
         },
       );
 
+      debugPrint('[ZIP IMPORT] Starting restoreBackup');
       final result = await backupService.restoreBackup(
         backupData,
         mode: RestoreMode.merge,
-        mainMasterKey: _repo.masterKey, // Assume same key for now
+        mainMasterKey: _repo.masterKey,
         targetMasterKey: _repo.masterKey,
       );
+      debugPrint('[ZIP IMPORT] restoreBackup completed success=${result.success}');
 
       if (!result.success) {
         throw Exception(result.error ?? 'Native restore failed');
@@ -282,15 +317,14 @@ class NoteImportService {
       onProgress(ImportStage.finalizing, 0.95, 'Finalizing...');
       stopwatch.stop();
       stats.timeTaken = stopwatch.elapsed;
-      stats.totalNotes = result.preservedLocalItems; // We'll just use counts from result
-      // Note: RestoreResult doesn't have detailed stats in a single field, 
-      // but it provides a summary string. We'll just return a generic success.
-      stats.totalNotes = 1; // Mark as success so UI shows success dialog
-      
+      stats.totalNotes = 1;
+
       onProgress(ImportStage.completed, 1.0, 'Vault restored successfully!');
-    } catch (e) {
+      debugPrint('[ZIP IMPORT] Native restore success');
+    } catch (e, st) {
       onProgress(ImportStage.failed, 1.0, 'Native restore failed: $e');
-      debugPrint('[NoteImportService] Native restore error: $e');
+      debugPrint('[ZIP IMPORT] NATIVE RESTORE ERROR: $e');
+      debugPrint('[ZIP IMPORT] Stack trace: $st');
     }
     return stats;
   }
@@ -469,7 +503,7 @@ class NoteImportService {
       onProgress(ImportStage.completed, 1.0, 'Full vault restored successfully!');
     } catch (e, st) {
       onProgress(ImportStage.failed, 1.0, 'Full restore failed: $e');
-      debugPrint('[NoteImportService] Full restore error: $e\n$st');
+      debugPrint('[ZIP IMPORT] FULL RESTORE ERROR: $e\n$st');
     }
     return stats;
   }

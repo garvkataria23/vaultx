@@ -287,6 +287,7 @@ class _SmartCompressionSheetState extends State<SmartCompressionSheet> {
             else ...[
               Expanded(
                 child: SingleChildScrollView(
+                  padding: const EdgeInsets.only(bottom: 24),
                   child: _buildOptionsContent(cs),
                 ),
               ),

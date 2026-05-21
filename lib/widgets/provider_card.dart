@@ -22,6 +22,7 @@ class ProviderCard extends StatefulWidget {
     this.onSignIn,
     this.onBackup,
     this.onRestore,
+    this.onDisconnect,
   });
 
   final BackupManager manager;
@@ -29,6 +30,7 @@ class ProviderCard extends StatefulWidget {
   final VoidCallback? onSignIn;
   final VoidCallback? onBackup;
   final VoidCallback? onRestore;
+  final VoidCallback? onDisconnect;
 
   @override
   State<ProviderCard> createState() => _ProviderCardState();
@@ -96,6 +98,33 @@ class _ProviderCardState extends State<ProviderCard>
         return 'Connected';
       case null:
         return 'Connecting...';
+    }
+  }
+
+  Future<void> _confirmDisconnect() async {
+    final name = widget.provider.displayName;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Disconnect $name?'),
+        content: const Text('You can reconnect anytime.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+            ),
+            child: const Text('Disconnect'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      widget.onDisconnect?.call();
     }
   }
 
@@ -270,26 +299,47 @@ class _ProviderCardState extends State<ProviderCard>
 
               // ── Actions ─────────────────────────────────────────────────
               if (isConnected)
-                Row(
+                Column(
                   children: [
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: (isUploading || isReconnecting || isMegaNotReady) ? null : widget.onBackup,
-                        icon: const Icon(Icons.backup_outlined, size: 18),
-                        label: const Text('Backup'),
-                        style: FilledButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: (isUploading || isReconnecting || isMegaNotReady) ? null : widget.onBackup,
+                            icon: const Icon(Icons.backup_outlined, size: 18),
+                            label: const Text('Backup'),
+                            style: FilledButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
+                          ),
                         ),
-                      ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: (isUploading || isReconnecting || isMegaNotReady) ? null : widget.onRestore,
+                            icon: const Icon(Icons.restore, size: 18),
+                            label: const Text('Restore'),
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
                       child: OutlinedButton.icon(
-                        onPressed: (isUploading || isReconnecting || isMegaNotReady) ? null : widget.onRestore,
-                        icon: const Icon(Icons.restore, size: 18),
-                        label: const Text('Restore'),
+                        onPressed: (isUploading || isReconnecting || isMegaNotReady) ? null : _confirmDisconnect,
+                        icon: Icon(Icons.logout, size: 18, color: cs.error),
+                        label: Text(
+                          'Disconnect ${widget.provider.displayName}',
+                          style: TextStyle(color: cs.error),
+                        ),
                         style: OutlinedButton.styleFrom(
+                          side: BorderSide(color: cs.error.withValues(alpha: 0.4)),
                           padding: const EdgeInsets.symmetric(vertical: 12),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),

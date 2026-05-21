@@ -36,29 +36,53 @@ class ArchiveService {
 
   /// Extracts a .vxbackup archive into a backup data map.
   static Future<Map<String, dynamic>> extractArchive(String archivePath) async {
-    final bytes = await File(archivePath).readAsBytes();
-    final archive = ZipDecoder().decodeBytes(bytes);
+    debugPrint('[ZIP IMPORT] ArchiveService.extractArchive start path=$archivePath');
+    try {
+      final fileExists = await File(archivePath).exists();
+      debugPrint('[ZIP IMPORT] Archive file exists=$fileExists');
+      if (!fileExists) {
+        throw Exception('Archive file not found: $archivePath');
+      }
 
-    final data = <String, dynamic>{};
-    Map<String, dynamic>? manifestMap;
+      final bytes = await File(archivePath).readAsBytes();
+      debugPrint('[ZIP IMPORT] Read bytes success size=${bytes.length}');
 
-    for (final file in archive) {
-      if (file.isFile) {
-        final content = file.content as List<int>;
-        final jsonStr = utf8.decode(content);
-        final decoded = jsonDecode(jsonStr);
+      final archive = ZipDecoder().decodeBytes(bytes);
+      debugPrint('[ZIP IMPORT] ZIP opened entries=${archive.length}');
 
-        if (file.name == 'manifest.json') {
-          manifestMap = decoded;
-          data['manifest'] = manifestMap;
-        } else if (file.name.startsWith('data/') && file.name.endsWith('.json')) {
-          final key = file.name.substring(5, file.name.length - 5);
-          data[key] = decoded;
+      final data = <String, dynamic>{};
+      Map<String, dynamic>? manifestMap;
+
+      for (final file in archive) {
+        if (file.isFile) {
+          debugPrint('[ZIP IMPORT] Archive entry: ${file.name} size=${file.size}');
+          final content = file.content as List<int>;
+          final jsonStr = utf8.decode(content);
+          final decoded = jsonDecode(jsonStr);
+
+          if (file.name == 'manifest.json') {
+            debugPrint('[ZIP IMPORT] manifest.json found');
+            manifestMap = decoded;
+            data['manifest'] = manifestMap;
+          } else if (file.name.startsWith('data/') && file.name.endsWith('.json')) {
+            final key = file.name.substring(5, file.name.length - 5);
+            debugPrint('[ZIP IMPORT] Data component: $key');
+            data[key] = decoded;
+          }
         }
       }
-    }
 
-    return data;
+      if (data.isEmpty) {
+        throw Exception('No data found in archive');
+      }
+
+      debugPrint('[ZIP IMPORT] ArchiveService.extractArchive success components=${data.length}');
+      return data;
+    } catch (e, st) {
+      debugPrint('[ZIP IMPORT] ARCHIVE EXTRACT ERROR: $e');
+      debugPrint('[ZIP IMPORT] Stack trace: $st');
+      rethrow;
+    }
   }
   
   static Future<void> cleanup(String archivePath) async {

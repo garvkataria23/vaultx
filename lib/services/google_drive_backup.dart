@@ -685,7 +685,7 @@ class GoogleDriveBackupService extends BaseCloudBackupProvider {
   }
 
   @override
-  Future<int> pruneBackups({int keepCount = 5}) async {
+  Future<int> pruneBackups({int keepCount = 3}) async {
     final versions = await listBackups();
     if (versions.length <= keepCount) return 0;
 

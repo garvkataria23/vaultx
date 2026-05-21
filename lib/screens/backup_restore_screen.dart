@@ -165,6 +165,21 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     }
   }
 
+  Future<void> _disconnectProvider(CloudProvider type) async {
+    try {
+      await _manager.signOut(type);
+      if (mounted) {
+        FloatingNotificationService.instance.show('${type.displayName} disconnected');
+      }
+      await _refreshVersions();
+      await _manager.refreshAllStorageInfo();
+    } catch (e) {
+      if (mounted) {
+        FloatingNotificationService.instance.show('Disconnect failed: $e', error: true);
+      }
+    }
+  }
+
   Future<void> _doBackup(CloudProvider type) async {
     final ok = await _manager.backupToProvider(
       type,
@@ -226,9 +241,6 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     // Authentication is handled by parent screen or we can add it here if needed
     // But since we are already inside Backup & Restore which required auth to enter, it's safer.
     
-    SecurityPlatform.setSensitiveOperationActive(true);
-    if (!mounted) return;
-
     final picked = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['zip'],
@@ -238,6 +250,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       return;
     }
 
+    SecurityPlatform.setSensitiveOperationActive(true);
     if (!mounted) return;
 
     setState(() => _importingZip = true);
@@ -465,6 +478,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
             onSignIn: () => _authenticateProvider(CloudProvider.googleDrive),
             onBackup: () => _doBackup(CloudProvider.googleDrive),
             onRestore: () => _handleRestoreTapForProvider(CloudProvider.googleDrive),
+            onDisconnect: () => _disconnectProvider(CloudProvider.googleDrive),
           ),
           const SizedBox(height: 12),
           ProviderCard(
@@ -473,6 +487,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
             onSignIn: () => _authenticateProvider(CloudProvider.mega),
             onBackup: () => _doBackup(CloudProvider.mega),
             onRestore: () => _handleRestoreTapForProvider(CloudProvider.mega),
+            onDisconnect: () => _disconnectProvider(CloudProvider.mega),
           ),
           const SizedBox(height: 24),
 

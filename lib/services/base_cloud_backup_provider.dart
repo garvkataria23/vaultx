@@ -199,6 +199,13 @@ abstract class BaseCloudBackupProvider implements CloudStorageProvider {
         lastBackupProvider: providerName,
       ));
       debugPrint('BACKUP TIMESTAMP UPDATED');
+
+      // Prune old backups (keep only keepCount most recent)
+      final pruned = await pruneBackups(keepCount: 3);
+      if (pruned > 0) {
+        debugPrint('PRUNE: deleted $pruned old backup(s)');
+      }
+
       debugPrint('UPLOAD: success (${totalSize}B)');
       return true;
     } catch (e, st) {

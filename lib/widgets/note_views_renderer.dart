@@ -117,6 +117,7 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
       debugPrint('[NoteViewsRenderer] Showing empty state for ${widget.mode.name}');
       return Center(
         child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
           physics: const AlwaysScrollableScrollPhysics(),
           child: Column(
             mainAxisSize: MainAxisSize.min,

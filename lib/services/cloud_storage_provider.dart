@@ -80,7 +80,7 @@ abstract class CloudStorageProvider {
   Future<BackupVersion?> getBackupMetadata();
 
   /// Delete old backups keeping only the [keepCount] most recent.
-  Future<int> pruneBackups({int keepCount = 5});
+  Future<int> pruneBackups({int keepCount = 3});
 
   /// Delete ALL backups.
   Future<int> deleteAllBackups();

@@ -175,16 +175,52 @@ class _TrashScreenState extends State<TrashScreen> {
 
   Future<void> _restoreSelected() async {
     final toRestore = _allItems.where((item) => _selectedIds.contains(item.id)).toList();
+    if (toRestore.isEmpty) return;
+
     bool needsAuth = toRestore.any((i) => i.vaultKind == VaultKind.hidden || i.type == 'password');
     if (needsAuth && !await _authenticate()) return;
 
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Restore items?'),
+        content: Text('Restore ${toRestore.length} selected ${toRestore.length == 1 ? 'item' : 'items'} to their original locations?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(ctx, true),
+            icon: const Icon(Icons.restore, size: 18),
+            label: const Text('Restore'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    int restoredCount = 0;
+    int failCount = 0;
     for (final item in toRestore) {
-      await widget.trashService.restore(item);
+      try {
+        await widget.trashService.restore(item);
+        restoredCount++;
+      } catch (e) {
+        failCount++;
+        debugPrint('TRASH RESTORE ERROR: ${item.title}: $e');
+      }
     }
     _selectedIds.clear();
     _isMultiSelect = false;
     await _load();
-    FloatingNotificationService.instance.show('Items restored');
+    if (mounted) {
+      if (failCount == 0) {
+        FloatingNotificationService.instance.show('${restoredCount} ${restoredCount == 1 ? 'item' : 'items'} restored');
+      } else {
+        FloatingNotificationService.instance.show(
+          '$restoredCount restored, $failCount failed',
+          error: true,
+        );
+      }
+    }
   }
 
   Future<void> _deleteSelectedForever() async {
@@ -417,6 +453,21 @@ class _TrashScreenState extends State<TrashScreen> {
           if (_isMultiSelect) ...[
             IconButton(icon: const Icon(Icons.restore), onPressed: _restoreSelected, tooltip: 'Restore'),
             IconButton(icon: const Icon(Icons.delete_forever, color: Colors.red), onPressed: _deleteSelectedForever, tooltip: 'Delete forever'),
+            PopupMenuButton<String>(
+              onSelected: (v) {
+                if (v == 'select_all') _selectAll();
+              },
+              itemBuilder: (_) => [
+                PopupMenuItem(
+                  value: 'select_all',
+                  child: Text(
+                    _selectedIds.length >= _filteredItems.length
+                        ? 'Deselect All'
+                        : 'Select All',
+                  ),
+                ),
+              ],
+            ),
           ] else if (_allItems.isNotEmpty) ...[
             IconButton(
               icon: const Icon(Icons.search),
