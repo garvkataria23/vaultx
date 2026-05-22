@@ -272,7 +272,17 @@ class MEGABackupService extends BaseCloudBackupProvider {
     await _ensureBackupFolderExists();
     final result = await _sdk.listBackupFiles();
     if (result['success'] == true && result['files'] != null) {
-      return List<Map<String, dynamic>>.from(result['files'] as List);
+      final rawList = result['files'] as List;
+      final nodes = <Map<String, dynamic>>[];
+      for (final item in rawList) {
+        final map = item as Map;
+        final stringMap = <String, dynamic>{};
+        map.forEach((k, v) {
+          stringMap[k.toString()] = v;
+        });
+        nodes.add(stringMap);
+      }
+      return nodes;
     }
     return [];
   }
@@ -520,16 +530,19 @@ class MEGABackupService extends BaseCloudBackupProvider {
       final versions = <BackupVersion>[];
 
       for (final node in nodes) {
-        final name = node['name'] as String? ?? '';
+        final name = (node['name'] ?? '').toString();
         
         // Filter for valid VaultX backup extensions
-        if (!name.endsWith('.vxbin') && !name.endsWith('.vxbackup') && !name.endsWith('_m.dat')) {
+        final lowerName = name.toLowerCase();
+        if (!lowerName.endsWith('.vxbin') &&
+            !lowerName.endsWith('.vxbackup') &&
+            !lowerName.endsWith('_m.dat')) {
           continue;
         }
 
-        final handle = node['handle'] as String? ?? '';
-        final size = node['size'] as int? ?? 0;
-        final ts = node['modificationTime'] as int? ?? 0;
+        final handle = (node['handle'] ?? '').toString();
+        final size = (node['size'] as num?)?.toInt() ?? 0;
+        final ts = (node['modificationTime'] as num?)?.toInt() ?? 0;
 
         final createdAt = ts > 0
             ? DateTime.fromMillisecondsSinceEpoch(ts * 1000)

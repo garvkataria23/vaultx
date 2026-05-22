@@ -27,6 +27,7 @@ class MegaClient private constructor(
     var onTransferStart: ((String, Long) -> Unit)? = null
     var onCreateFolderResult: ((Boolean, String?, MegaNode?) -> Unit)? = null
     var onAccountDetailsResult: ((Boolean, String?, Long, Long) -> Unit)? = null
+    var onNodesUpdate: (() -> Unit)? = null
 
     var megaReady: Boolean = false
         private set
@@ -78,6 +79,7 @@ class MegaClient private constructor(
                     megaReady = actuallyReady
                     if (actuallyReady) {
                         Log.i(TAG, "FETCH NODES SUCCESS - MEGA READY TRUE (root ok)")
+                        onNodesUpdate?.invoke()
                     } else {
                         Log.e(TAG, "FETCH NODES NOT READY: success=$success, root=${root != null}")
                     }
@@ -220,6 +222,7 @@ class MegaClient private constructor(
     }
 
     init {
+        Log.i(TAG, "MegaClient initialized. MegaApi hash: ${System.identityHashCode(megaApi)}")
         megaApi.addRequestListener(requestListener)
         megaApi.addTransferListener(transferListener)
     }

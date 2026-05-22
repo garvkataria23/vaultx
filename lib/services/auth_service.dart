@@ -148,6 +148,7 @@ class VaultAuthService {
   Future<String> biometricTypeLabel() async {
     final types = await getAvailableBiometrics();
     if (types.contains(BiometricType.face)) return 'Face Unlock';
+    if (types.contains(BiometricType.strong)) return 'Biometrics';
     if (types.contains(BiometricType.fingerprint)) return 'Fingerprint';
     if (types.contains(BiometricType.iris)) return 'Iris';
     return 'Device Biometrics';
@@ -156,8 +157,11 @@ class VaultAuthService {
   Future<IconData> biometricTypeIcon() async {
     final types = await getAvailableBiometrics();
     if (types.contains(BiometricType.face)) return Icons.face;
-    if (types.contains(BiometricType.fingerprint)) return Icons.fingerprint;
     if (types.contains(BiometricType.iris)) return Icons.visibility;
+    if (types.contains(BiometricType.strong) ||
+        types.contains(BiometricType.fingerprint)) {
+      return Icons.fingerprint;
+    }
     return Icons.security;
   }
 
@@ -331,16 +335,22 @@ class VaultAuthService {
   // ---------------------------------------------------------------------------
 
   Future<bool> biometricAvailable() async {
-    return await _localAuth.canCheckBiometrics ||
-        await _localAuth.isDeviceSupported();
+    return await _localAuth.isDeviceSupported();
   }
 
   Future<bool> authenticateBiometric() async {
     final label = await biometricTypeLabel();
+    final types = await getAvailableBiometrics();
+    final hasFace = types.contains(BiometricType.face);
+
     return _localAuth.authenticate(
       localizedReason: 'Authenticate with $label to unlock VaultX',
-      options: const AuthenticationOptions(
-        biometricOnly: true,
+      options: AuthenticationOptions(
+        // Allow non-strong biometrics if Face Unlock is available to support
+        // Class 2 (Weak) implementations common on many Android devices.
+        // This change ensures Face Unlock is prioritized and active if enrolled.
+        // It also enables device PIN/Pattern fallback within the system dialog.
+        biometricOnly: !hasFace,
         stickyAuth: true,
       ),
     );
