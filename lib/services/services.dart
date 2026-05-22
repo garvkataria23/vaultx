@@ -56,6 +56,7 @@ export 'full_export_service.dart' show FullExportService;
 export 'transcription_service.dart' show TranscriptionService;
 export 'share_package_service.dart' show SharePackageService;
 export 'summarization_service.dart' show SummarizationService;
+export 'smart_vault_service.dart' show SmartVaultService, SmartVaultResult, AIMemory;
 export 'trash_service.dart' show TrashService, TrashItem;
 export 'navigation_service.dart' show NavigationService;
 

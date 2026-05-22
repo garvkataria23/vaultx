@@ -524,6 +524,63 @@ class MEGABackupService extends BaseCloudBackupProvider {
 
   // ── Listing ─────────────────────────────────────────────────────────────
 
+  static const _versionsCacheKey = 'cachedMegaVersions';
+
+  void _cacheVersions(List<BackupVersion> versions) {
+    final json = versions.map((v) => {
+      'driveFileId': v.driveFileId,
+      'fileName': v.fileName,
+      'createdAt': v.createdAt.toIso8601String(),
+      'totalSizeBytes': v.totalSizeBytes,
+      'hasAuthBundle': v.hasAuthBundle,
+      'provider': v.provider.name,
+    }).toList();
+    Hive.box('vaultx_settings').put(_versionsCacheKey, json);
+  }
+
+  List<BackupVersion> _loadCachedVersions() {
+    try {
+      final raw = Hive.box('vaultx_settings').get(_versionsCacheKey) as List?;
+      if (raw != null && raw.isNotEmpty) {
+        return raw.map((item) {
+          final map = Map<String, dynamic>.from(item as Map);
+          return BackupVersion(
+            driveFileId: (map['driveFileId'] ?? '').toString(),
+            fileName: (map['fileName'] ?? '').toString(),
+            createdAt: DateTime.parse(map['createdAt'] as String),
+            totalSizeBytes: (map['totalSizeBytes'] as num?)?.toInt() ?? 0,
+            hasAuthBundle: map['hasAuthBundle'] == true,
+            provider: CloudProvider.mega,
+          );
+        }).toList()
+          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      }
+    } catch (e) {
+      debugPrint('MEGA CACHE LOAD ERROR: $e');
+    }
+
+    // Seed cache from lastKnownMegaBackupCount so the UI & restore button
+    // show backups exist even before the MEGA SDK tree syncs on startup.
+    final knownCount = Hive.box('vaultx_settings')
+        .get('lastKnownMegaBackupCount', defaultValue: 0) as int;
+    if (knownCount > 0) {
+      final now = DateTime.now();
+      final seed = List.generate(knownCount, (i) => ({
+        'driveFileId': '',
+        'fileName': 'VaultX Backup',
+        'createdAt': now.subtract(Duration(hours: knownCount - i)).toIso8601String(),
+        'totalSizeBytes': 0,
+        'hasAuthBundle': true,
+        'provider': 'mega',
+      }));
+      Hive.box('vaultx_settings').put(_versionsCacheKey, seed);
+      debugPrint('MEGA: seeded cache from lastKnownMegaBackupCount=$knownCount');
+      return _loadCachedVersions(); // recursive call now hits the non-empty path
+    }
+
+    return [];
+  }
+
   @override
   Future<List<BackupVersion>> listBackups() async {
     if (!await ensureAuthenticated()) return [];
@@ -563,9 +620,25 @@ class MEGABackupService extends BaseCloudBackupProvider {
       }
 
       versions.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+      if (versions.isNotEmpty) {
+        _cacheVersions(versions);
+      } else {
+        final cached = _loadCachedVersions();
+        if (cached.isNotEmpty) {
+          debugPrint('MEGA SDK TREE NOT READY — returning ${cached.length} cached versions');
+          return cached;
+        }
+      }
+
       return versions;
     } catch (e, st) {
       debugPrint('MEGA SDK LIST: $e\n$st');
+      final cached = _loadCachedVersions();
+      if (cached.isNotEmpty) {
+        debugPrint('MEGA SDK LIST failed — returning ${cached.length} cached versions');
+        return cached;
+      }
       return [];
     }
   }
@@ -695,17 +768,26 @@ class MEGABackupService extends BaseCloudBackupProvider {
 
   @override
   Future<({int fileCount, int totalBytes})> storageUsage() async {
-    if (!await ensureAuthenticated()) return (fileCount: 0, totalBytes: 0);
-
     try {
       final nodes = await _listBackupNodes();
       var totalBytes = 0;
       for (final node in nodes) {
         totalBytes += node['size'] as int? ?? 0;
       }
+      if (nodes.isEmpty) {
+        final cached = _loadCachedVersions();
+        if (cached.isNotEmpty) {
+          debugPrint('MEGA STORAGE USAGE: tree returned 0, using cached count=${cached.length}');
+          return (fileCount: cached.length, totalBytes: totalBytes);
+        }
+      }
       return (fileCount: nodes.length, totalBytes: totalBytes);
     } catch (e) {
       debugPrint('MEGA SDK STORAGE USAGE: $e');
+      final cached = _loadCachedVersions();
+      if (cached.isNotEmpty) {
+        return (fileCount: cached.length, totalBytes: 0);
+      }
       return (fileCount: 0, totalBytes: 0);
     }
   }

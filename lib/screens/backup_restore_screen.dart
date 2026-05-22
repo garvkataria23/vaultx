@@ -120,6 +120,13 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       setState(() {});
       _refreshVersions();
     }
+
+    // Retry MEGA version listing after a delay so the SDK tree has a
+    // chance to sync; this replaces any synthetic cached versions with
+    // real data (with valid driveFileId for restore).
+    Future.delayed(const Duration(seconds: 6), () {
+      if (mounted) _refreshVersions();
+    });
   }
 
   Future<void> _recoverStaleLock() async {

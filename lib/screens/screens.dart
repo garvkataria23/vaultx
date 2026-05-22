@@ -16,3 +16,4 @@ export 'privacy_policy_screen.dart' show PrivacyPolicyScreen;
 export 'security_logs_screen.dart' show SecurityLogsScreen;
 export 'decoy_calculator_screen.dart' show DecoyCalculatorScreen;
 export 'smart_view_screen.dart' show SmartViewScreen;
+export 'smart_vault_screen.dart' show SmartVaultScreen;

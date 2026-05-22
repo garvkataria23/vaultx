@@ -17,6 +17,7 @@ import 'settings_screen.dart';
 import 'decoy_calculator_screen.dart';
 import 'game_screen.dart';
 import 'smart_view_screen.dart';
+import 'smart_vault_screen.dart';
 
 const _kPageSize = 50;
 
@@ -1079,6 +1080,30 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
                       ),
                     );
                     if (mounted) _load();
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _buildDashboardTile(
+                  context,
+                  icon: Icons.auto_awesome_rounded,
+                  label: 'Smart AI',
+                  onTap: () {
+                    if (widget.authResult.kind == VaultKind.decoy) {
+                      _showDecoyInfo('Smart AI');
+                      return;
+                    }
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => SmartVaultScreen(
+                          notes: _notes,
+                          repo: _repo,
+                          blobs: _blobs,
+                          vaultKind: widget.authResult.kind,
+                        ),
+                      ),
+                    );
                   },
                 ),
               ),
