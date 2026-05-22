@@ -171,11 +171,13 @@ class MEGABackupService extends BaseCloudBackupProvider {
       );
 
       if (result['success'] == true) {
+        debugPrint('SESSION RESTORE SUCCESS');
         // Essential: double-check ready state before declaring success
         if (await _sdk.isReady()) {
           _cachedEmail = email;
           lastError = null;
           debugPrint('MEGA SESSION RESTORED AND READY');
+          debugPrint('MEGA READY TRUE');
           megaConnectionState = MegaConnectionState.ready;
           return true;
         } else {
@@ -273,6 +275,7 @@ class MEGABackupService extends BaseCloudBackupProvider {
     final result = await _sdk.listBackupFiles();
     if (result['success'] == true && result['files'] != null) {
       final rawList = result['files'] as List;
+      debugPrint('TRACKED HANDLE COUNT: ${rawList.length}');
       final nodes = <Map<String, dynamic>>[];
       for (final item in rawList) {
         final map = item as Map;
@@ -531,18 +534,19 @@ class MEGABackupService extends BaseCloudBackupProvider {
 
       for (final node in nodes) {
         final name = (node['name'] ?? '').toString();
-        
-        // Filter for valid VaultX backup extensions
         final lowerName = name.toLowerCase();
-        if (!lowerName.endsWith('.vxbin') &&
-            !lowerName.endsWith('.vxbackup') &&
-            !lowerName.endsWith('_m.dat')) {
-          continue;
-        }
+        
+        final isValid = lowerName.endsWith('.vxbin') ||
+            lowerName.endsWith('.vxbackup') ||
+            lowerName.endsWith('_m.dat');
 
         final handle = (node['handle'] ?? '').toString();
         final size = (node['size'] as num?)?.toInt() ?? 0;
         final ts = (node['modificationTime'] as num?)?.toInt() ?? 0;
+
+        if (!isValid && size <= 0) {
+          continue;
+        }
 
         final createdAt = ts > 0
             ? DateTime.fromMillisecondsSinceEpoch(ts * 1000)
@@ -550,7 +554,7 @@ class MEGABackupService extends BaseCloudBackupProvider {
 
         versions.add(BackupVersion(
           driveFileId: handle,
-          fileName: name,
+          fileName: name.isNotEmpty ? name : "VaultX Backup",
           createdAt: createdAt,
           totalSizeBytes: size,
           hasAuthBundle: true,

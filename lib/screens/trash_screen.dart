@@ -42,6 +42,7 @@ class _TrashScreenState extends State<TrashScreen> {
   }
 
   Future<void> _load() async {
+    if (!mounted) return;
     setState(() => _loading = true);
     try {
       final items = await widget.trashService.loadAllTrash();
@@ -166,6 +167,7 @@ class _TrashScreenState extends State<TrashScreen> {
       ),
     );
     if (secret == null || secret.isEmpty) return false;
+    if (!mounted) return false;
     var result = widget.repo!.kind == VaultKind.hidden 
         ? await widget.auth.unlockHidden(secret) 
         : await widget.auth.unlockWithPassword(secret);
@@ -247,6 +249,7 @@ class _TrashScreenState extends State<TrashScreen> {
     for (final item in toDelete) {
       await widget.trashService.deleteForever(item);
     }
+    if (!mounted) return;
     _selectedIds.clear();
     _isMultiSelect = false;
     await _load();

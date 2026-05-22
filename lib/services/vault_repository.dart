@@ -49,7 +49,6 @@ class VaultRepository {
     for (final instance in _instances) {
       instance.clearCache();
     }
-    debugPrint('VAULT_REPO: cleared caches for ${_instances.length} instances');
   }
 
   /// Clears the internal decryption cache for this repository instance.
@@ -80,14 +79,15 @@ class VaultRepository {
   }
 
   Future<List<SecureNote>> loadNotes() async {
+    final allKeys = _box.keys.map((k) => k.toString()).toList();
+    final prefix = '$_prefix:';
+    final matchedKeys = allKeys.where((k) => k.startsWith(prefix) && !k.startsWith('${prefix}folder_metadata:')).toList();
+
     final entries = <MapEntry<String, Map<String, dynamic>>>[];
-    final folderPrefix = '$_prefix:folder_metadata:';
-    for (final k in _box.keys.where(
-      (k) => k.toString().startsWith('$_prefix:') && !k.toString().startsWith(folderPrefix),
-    )) {
+    for (final k in matchedKeys) {
       final val = _box.get(k);
       if (val is Map) {
-        entries.add(MapEntry(k as String, _deepConvert(val)));
+        entries.add(MapEntry(k, _deepConvert(val)));
       }
     }
 

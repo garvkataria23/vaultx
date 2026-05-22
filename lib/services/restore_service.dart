@@ -34,7 +34,13 @@ typedef RestoreProgressCallback = void Function(RestoreProgress progress);
 /// master key is recovered and used for the restore.
 /// NO device-specific keys are used — restore works across any device
 /// with the same Google account + vault password.
+///
+/// UI layer can listen to [restoreCompleted] to trigger a data reload
+/// after a restore finishes.
 class RestoreService {
+  /// Fires after every successful restore completion.
+  /// UI (e.g. VaultHome) listens to this to force a full data reload.
+  static final restoreCompleted = ValueNotifier<int>(0);
   RestoreService({
     required this.authService,
     required this.driveService,
@@ -346,6 +352,22 @@ class RestoreService {
         await _rebuildIndexes();
         debugPrint('PROVIDER REBUILD: restore service cache rebuild complete');
 
+        // ── Post-restore diagnostics ──────────────────────────────────
+        final recordsBox = Hive.box('vaultx_records');
+        final mainKeyCount = recordsBox.keys.where((k) => k.toString().startsWith('main:')).length;
+        final hiddenKeyCount = recordsBox.keys.where((k) => k.toString().startsWith('hidden:')).length;
+        final totalKeyCount = recordsBox.keys.length;
+
+        debugPrint('');
+        debugPrint('═══════════ RESTORE COMMIT DIAGNOSTICS ═══════════');
+        debugPrint('RESTORE COMMIT: main notes restored  = ${result.mainNotesRestored}');
+        debugPrint('RESTORE COMMIT: hidden notes restored = ${result.hiddenNotesRestored}');
+        debugPrint('RESTORE COMMIT: DB main keys         = $mainKeyCount');
+        debugPrint('RESTORE COMMIT: DB hidden keys       = $hiddenKeyCount');
+        debugPrint('RESTORE COMMIT: DB total keys        = $totalKeyCount');
+        debugPrint('════════════════════════════════════════════════════');
+        debugPrint('');
+
         _logProvider('Verification=passed');
 
         _report(const RestoreProgress(
@@ -353,7 +375,7 @@ class RestoreService {
           fraction: 1.0,
           componentName: 'Restore complete',
         ));
-        debugPrint('UI REFRESH COMPLETE: restore completed and listeners notified');
+        debugPrint('UI REFRESH COMPLETE: restore completed, notifier fired, UIs will reload');
 
         await AuditLog.write('$_providerTag restore completed: ${result.summary}');
       } else {
@@ -459,15 +481,39 @@ class RestoreService {
     VaultRepository.clearAllCaches();
     PasswordVaultService.clearAllCaches();
 
-    // 2. Rebuild search index
-    // We need a temporary repo to decrypt notes for indexing
+    // 2. Force-flush all Hive boxes to ensure on-disk state is committed
+    await Hive.box('vaultx_records').flush();
+    await Hive.box('vaultx_drive').flush();
+    await Hive.box('vaultx_passwords').flush();
+    await Hive.box('vaultx_settings').flush();
+
+    // 3. Rebuild search index
     final tempRepo = VaultRepository(masterKey, kind);
     final allNotes = await tempRepo.loadNotes();
     final trashNotes = await tempRepo.loadTrashNotes();
     
     await SearchIndexService.instance.rebuild([...allNotes, ...trashNotes]);
     
+    // 4. Diagnose — read raw Hive box counts for verification
+    final recordsBox = Hive.box('vaultx_records');
+    final mainKeyCount = recordsBox.keys.where((k) => k.toString().startsWith('main:')).length;
+    final hiddenKeyCount = recordsBox.keys.where((k) => k.toString().startsWith('hidden:')).length;
+    final totalKeyCount = recordsBox.keys.length;
+
+    // 5. Fire the restore-completed notifier so listening UIs reload
+    restoreCompleted.value++;
+
+    debugPrint('');
+    debugPrint('═══════════════ RESTORE DIAGNOSTICS ═══════════════');
     debugPrint('RESTORE REBUILD: indexes rebuilt, caches invalidated');
+    debugPrint('RESTORE COMPLETE MAIN NOTES COUNT: ${allNotes.length}');
+    debugPrint('DB RAW MAIN KEYS COUNT:   $mainKeyCount');
+    debugPrint('DB RAW HIDDEN KEYS COUNT: $hiddenKeyCount');
+    debugPrint('DB RAW TOTAL KEYS COUNT:  $totalKeyCount');
+    debugPrint('DB NOTES COUNT AFTER RESTORE (decrypted): ${allNotes.length + trashNotes.length}');
+    debugPrint('UI NOTES COUNT AFTER RELOAD: pending UI refresh (notifier fired)');
+    debugPrint('═══════════════════════════════════════════════════');
+    debugPrint('');
   }
 
   String _currentComponentLabel(List<ComponentProgress> components) {

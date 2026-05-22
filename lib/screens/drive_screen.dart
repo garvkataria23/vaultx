@@ -208,6 +208,7 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
     ctrl.dispose();
 
     if (secret == null || secret.isEmpty) return false;
+    if (!mounted) return false;
     
     bool success = false;
     if (widget.isDecoy) {
@@ -314,6 +315,7 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
         break;
     }
 
+    if (!mounted) return;
     _deselectAll();
     _load();
   }

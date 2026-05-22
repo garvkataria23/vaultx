@@ -492,6 +492,20 @@ class BackupManager extends ChangeNotifier {
     }
   }
 
+  /// Seed a cached backup count into storage info so the UI shows it
+  /// immediately on startup before the actual listing completes.
+  void seedCachedBackupCount(CloudProvider type, int count) {
+    final current = _storageInfo[type] ?? StorageInfo(provider: type);
+    _storageInfo[type] = StorageInfo(
+      provider: type,
+      usedBytes: current.usedBytes,
+      totalBytes: current.totalBytes,
+      backupFileCount: count,
+      backupBytes: current.backupBytes,
+    );
+    notifyListeners();
+  }
+
   // ── Internal ──────────────────────────────────────────────────────────
 
   void _updateState(CloudProvider type, {

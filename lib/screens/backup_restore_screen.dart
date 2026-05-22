@@ -98,8 +98,23 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
   }
 
   Future<void> _init() async {
+    debugPrint('APP START');
     await _manager.init();
+
     await _manager.refreshAllStorageInfo();
+
+    // If refresh returned 0 but we have a cached count, the MEGA SDK tree
+    // isn't synced yet (SDK TREE MISS ONLY) — seed the cached count so
+    // the UI shows the real value until the async listing completes.
+    final cachedMegaCount = Hive.box('vaultx_settings').get('lastKnownMegaBackupCount', defaultValue: 0) as int;
+    if (cachedMegaCount > 0) {
+      final actual = _manager.getStorageInfo(CloudProvider.mega);
+      if (actual.backupFileCount == 0) {
+        _manager.seedCachedBackupCount(CloudProvider.mega, cachedMegaCount);
+        debugPrint('SEEDED CACHED MEGA BACKUP COUNT: $cachedMegaCount (SDK tree not ready)');
+      }
+    }
+
     if (mounted) {
       _recoverStaleLock();
       setState(() {});
@@ -137,8 +152,19 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       final provider = _manager.getProvider(type);
       if (provider != null && _manager.isProviderConnected(type)) {
         try {
+          if (type == CloudProvider.mega) debugPrint('LIST BACKUP FILES START');
           final versions = await provider.listBackups();
           allVersions.addAll(versions);
+          if (type == CloudProvider.mega) {
+            final count = versions.length;
+            debugPrint('FINAL DETECTED BACKUP FILES COUNT: $count');
+            // Only update cache/UI with a non-zero count — zero likely means
+            // the MEGA SDK tree hasn't synced yet (SDK TREE MISS ONLY).
+            if (count > 0) {
+              await Hive.box('vaultx_settings').put('lastKnownMegaBackupCount', count);
+              _manager.seedCachedBackupCount(CloudProvider.mega, count);
+            }
+          }
         } catch (_) {}
       }
     }

@@ -68,6 +68,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
   List<String> _cachedFolders = ['All'];
   List<String> _searchSuggestions = [];
   Set<FilterChipType> _activeFilterTypes = {};
+  VoidCallback? _restoreListener;
 
   @override
   void initState() {
@@ -108,6 +109,11 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
     }
     DeadMansService.resetTimer();
     _load();
+    _restoreListener = () {
+      debugPrint('[VaultHome] Restore completed — reloading all data');
+      _load();
+    };
+    RestoreService.restoreCompleted.addListener(_restoreListener!);
     _resetLockTimer();
     SecurityPlatform.devicePosture().then((v) {
       if (!mounted) return;
@@ -129,6 +135,9 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    if (_restoreListener != null) {
+      RestoreService.restoreCompleted.removeListener(_restoreListener!);
+    }
     SmartOcrScanner.stop();
     _lockTimer?.cancel();
     _lockHoldTimer?.cancel();
@@ -358,6 +367,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
         break;
     }
 
+    if (!mounted) return;
     _deselectAll();
     await _load();
   }
@@ -687,6 +697,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
     ctrl.dispose();
 
     if (secret == null || secret.isEmpty) return false;
+    if (!mounted) return false;
 
     bool success = false;
     if (widget.authResult.kind == VaultKind.decoy) {

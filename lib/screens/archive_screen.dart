@@ -247,6 +247,7 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
     ctrl.dispose();
 
     if (secret == null || secret.isEmpty) return false;
+    if (!mounted) return false;
     
     var result = widget.repo.kind == VaultKind.hidden
         ? await widget.auth.unlockHidden(secret)
@@ -332,6 +333,7 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
       }
     }
 
+    if (!mounted) return;
     _deselectAll();
     await _load();
   }
