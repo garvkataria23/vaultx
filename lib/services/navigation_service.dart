@@ -4,6 +4,16 @@ import '../services/services.dart';
 import '../screens/note_editor.dart';
 
 class NavigationService {
+  static const String routeHome = '/home';
+  static const String routeDrive = '/drive';
+  static const String routeSecurity = '/security';
+  static const String routeSettings = '/settings';
+  static const String routeGame = '/game';
+
+  static Future<void> navigateTo(BuildContext context, String routeName, {Object? arguments}) async {
+    await Navigator.of(context).pushNamed(routeName, arguments: arguments);
+  }
+
   static Future<void> openNote({
     required BuildContext context,
     required SecureNote note,

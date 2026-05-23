@@ -12,14 +12,6 @@ import 'restore_screen.dart';
 import 'vault_home.dart';
 
 /// Login screen — password and biometric unlock.
-///
-/// Password unlock routes correctly to:
-///   main   → real vault
-///   hidden → hidden vault (separate Hive box)
-///   decoy  → empty fake vault (no real notes ever shown)
-///
-/// Biometric is only shown for the main vault — not hidden or decoy, since
-/// those require explicit password entry to provide deniability.
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key, required this.auth});
   final VaultAuthService auth;
@@ -53,7 +45,6 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _errorTimer?.cancel();
-    _secret.clear();
     _secret.dispose();
     super.dispose();
   }
@@ -86,7 +77,6 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
     if (autoPrompt && _biometricAvailable && !_biometricBusy && _mode == _VaultMode.main) {
       final appState = context.read<VaultAppState>();
       if (!appState.isBiometricEscalated) {
-        // Delay slightly to ensure UI is ready and not jarring
         Future.delayed(const Duration(milliseconds: 300), () {
           if (mounted && _biometricAvailable && !_biometricBusy) {
             _unlockWithBiometric();
@@ -135,7 +125,6 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
     });
 
     AuthResult result;
-
     switch (_mode) {
       case _VaultMode.main:
         result = await widget.auth.unlockWithPassword(_secret.text);
@@ -158,11 +147,7 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
     await AuditLog.write('Failed password unlock attempt');
     await _handleFailedAttempt();
     if (!mounted) return;
-    final notifSetting =
-        Hive.box(
-              'vaultx_settings',
-            ).get('failedAttemptNotifications', defaultValue: 'persistent')
-            as String;
+    final notifSetting = Hive.box('vaultx_settings').get('failedAttemptNotifications', defaultValue: 'persistent') as String;
     setState(() {
       _passwordBusy = false;
       _error = null;
@@ -176,66 +161,43 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
       result.error ?? 'Invalid password',
       error: true,
       mode: mode,
-      duration: notifSetting == 'persistent'
-          ? const Duration(minutes: 15)
-          : const Duration(seconds: 4),
+      duration: notifSetting == 'persistent' ? const Duration(minutes: 15) : const Duration(seconds: 4),
     );
   }
 
-  /// After successful login, check for existing backup on Google Drive.
-  /// If found, show restore prompt. Otherwise navigate directly to vault.
   Future<void> _checkForRestoreAfterLogin(AuthResult result) async {
-    // Only check for main vault (not hidden/decoy on login)
     if (result.kind != VaultKind.main) {
-      debugPrint('LOGIN_RESTORE: Skipping check for ${result.kind} vault');
       _navigateHome(result);
       return;
     }
 
-    // Check if this is a fresh setup (no local data = potential new device)
-    final hasLocalData = _hasLocalVaultData();
-    if (hasLocalData) {
-      debugPrint('LOGIN_RESTORE: Local data exists, skipping auto-restore check');
+    if (_hasLocalVaultData()) {
       _navigateHome(result);
       return;
     }
 
-    debugPrint('LOGIN_RESTORE: No local data, checking for cloud backups...');
+    final autoRestore = Hive.box('vaultx_settings').get('autoRestore', defaultValue: false) as bool;
 
-    // Check if auto-restore is enabled in settings
-    final autoRestore =
-        Hive.box('vaultx_settings').get('autoRestore', defaultValue: false)
-            as bool;
-
-    // Try to detect backup silently
     try {
       final driveService = GoogleDriveBackupService(
         authService: widget.auth,
         masterKey: result.masterKey,
       );
       
-      debugPrint('LOGIN_RESTORE: Attempting silent Drive session restoration...');
       final restoredEmail = await driveService.restoreSession();
-      
       if (restoredEmail == null) {
-        debugPrint('LOGIN_RESTORE: No active Google session found, skipping');
         _navigateHome(result);
         return;
       }
 
-      debugPrint('LOGIN_RESTORE: Google session restored for $restoredEmail. Checking for backups...');
       final hasBackup = await driveService.hasBackup();
-      
       if (!hasBackup) {
-        debugPrint('LOGIN_RESTORE: No VaultX backups found on Google Drive for $restoredEmail');
         _navigateHome(result);
         return;
       }
 
-      debugPrint('LOGIN_RESTORE: Backup found! Prompting user for restore...');
       if (!mounted) return;
 
-      // Backup found — show restore prompt
       final popResult = await Navigator.of(context).push<String>(
         MaterialPageRoute(
           builder: (_) => RestoreScreen(
@@ -246,10 +208,7 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
             autoRestore: autoRestore,
             onComplete: (success) {
               if (success) {
-                debugPrint('LOGIN_RESTORE: Restore completed successfully via RestoreScreen');
-                FloatingNotificationService.instance.show(
-                  'Vault data restored successfully',
-                );
+                FloatingNotificationService.instance.show('Vault data restored successfully');
               }
             },
           ),
@@ -259,31 +218,20 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
       if (!mounted) return;
 
       if (popResult != null && _isBase64MasterKey(popResult)) {
-        // Restore completed successfully — use the backup's master key
-        debugPrint('LOGIN_RESTORE: Using restored master key');
         final masterKey = base64Decode(popResult);
-        final pendingResult = AuthResult.pending(
-          masterKey,
-          'masterVerifier',
-          result.kind,
-        );
+        final pendingResult = AuthResult.pending(masterKey, 'masterVerifier', result.kind);
         final verifiedResult = await widget.auth.verify(pendingResult);
         if (mounted) {
           _navigateHome(verifiedResult.ok ? verifiedResult : result);
         }
       } else {
-        // Restore was skipped or cancelled — use original result
-        debugPrint('LOGIN_RESTORE: Restore was skipped or cancelled by user');
         _navigateHome(result);
       }
-    } catch (e, st) {
-      debugPrint('LOGIN_RESTORE_ERROR: Failed during auto-restore check: $e');
-      debugPrint('$st');
+    } catch (e) {
       if (mounted) _navigateHome(result);
     }
   }
 
-  /// Quick check if local vault already has data.
   bool _hasLocalVaultData() {
     try {
       return Hive.box('vaultx_records').isNotEmpty ||
@@ -298,32 +246,17 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
     if (!mounted) return;
     final appState = context.read<VaultAppState>();
     await appState.recordFailedPinAttempt();
-    debugPrint('INTRUDER: failed attempt count=${appState.failedPinAttempts}');
 
     if (!mounted) return;
     final settingsBox = Hive.box('vaultx_settings');
-    final enabled =
-        settingsBox.get('intruderCaptureEnabled', defaultValue: true) as bool;
-    if (!enabled) {
-      debugPrint('INTRUDER: capture disabled in settings');
-      return;
-    }
+    final enabled = settingsBox.get('intruderCaptureEnabled', defaultValue: true) as bool;
+    if (!enabled) return;
 
-    final threshold =
-        settingsBox.get('intruderCaptureThreshold', defaultValue: 3) as int;
-    if (appState.failedPinAttempts < threshold) {
-      debugPrint(
-        'INTRUDER: below threshold ($threshold), at ${appState.failedPinAttempts}',
-      );
-      return;
-    }
+    final threshold = settingsBox.get('intruderCaptureThreshold', defaultValue: 3) as int;
+    if (appState.failedPinAttempts < threshold) return;
 
     final cooldownOk = await IntruderSelfieService.isCooldownElapsed();
-    if (!cooldownOk) {
-      debugPrint('INTRUDER: cooldown active, skipping');
-      await AuditLog.write('Intruder capture skipped — cooldown active');
-      return;
-    }
+    if (!cooldownOk) return;
 
     try {
       final key = await widget.auth.intruderLogKey();
@@ -334,21 +267,14 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
           id: attachment.id,
           timestamp: DateTime.now(),
           attemptNumber: appState.failedPinAttempts,
-          authMethod: _mode == _VaultMode.hidden
-              ? 'hidden_password'
-              : 'password',
+          authMethod: _mode == _VaultMode.hidden ? 'hidden_password' : 'password',
           attachment: attachment,
         );
         await Hive.box('vaultx_intruder').put(attachment.id, entry.toJson());
-        debugPrint('INTRUDER: log entry saved id=${attachment.id}');
       }
-    } catch (e) {
-      debugPrint('INTRUDER: capture error: $e');
-    }
+    } catch (_) {}
   }
 
-  /// Returns `true` if [s] is a valid base64-encoded 32-byte master key
-  /// (i.e. the result of a successful restore, not a skip/later/cancel).
   bool _isBase64MasterKey(String s) {
     try {
       final bytes = base64Decode(s);
@@ -362,12 +288,13 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
     DeadMansService.resetTimer();
     if (!mounted) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (_) => VaultHome(auth: widget.auth, authResult: result),
-        ),
-      );
+      if (mounted && result.ok) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (_) => VaultHome(auth: widget.auth, authResult: result),
+          ),
+        );
+      }
     });
   }
 
@@ -398,10 +325,7 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
                     spacing: 8,
                     runSpacing: 8,
                     children: [
-                      SecurityPill(
-                        icon: Icons.screenshot_monitor,
-                        label: 'Screen shield',
-                      ),
+                      SecurityPill(icon: Icons.screenshot_monitor, label: 'Screen shield'),
                       SecurityPill(icon: Icons.key, label: 'Key stays local'),
                     ],
                   ),
@@ -415,9 +339,7 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
                         decoration: BoxDecoration(
                           color: cs.errorContainer.withValues(alpha: 0.2),
                           borderRadius: BorderRadius.circular(16),
-                          border: Border.all(
-                            color: cs.error.withValues(alpha: 0.2),
-                          ),
+                          border: Border.all(color: cs.error.withValues(alpha: 0.2)),
                         ),
                         child: Row(
                           children: [
@@ -426,11 +348,7 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
                             Expanded(
                               child: Text(
                                 'Too many biometric attempts. Enter password to continue.',
-                                style: TextStyle(
-                                  color: cs.error,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                ),
+                                style: TextStyle(color: cs.error, fontSize: 13, fontWeight: FontWeight.w600),
                               ),
                             ),
                           ],
@@ -451,11 +369,8 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
                         Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 12),
                           child: Text(
-                            biometricEscalated
-                                ? 'password required'
-                                : 'or use password',
-                            style: Theme.of(context).textTheme.bodySmall
-                                ?.copyWith(color: cs.onSurfaceVariant),
+                            biometricEscalated ? 'password required' : 'or use password',
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
                           ),
                         ),
                         Expanded(child: Divider(color: cs.outlineVariant)),
@@ -468,17 +383,10 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
                     controller: _secret,
                     obscureText: !_secretVisible,
                     decoration: InputDecoration(
-                      labelText: _mode == _VaultMode.hidden
-                          ? 'Hidden vault password'
-                          : 'Master password',
+                      labelText: _mode == _VaultMode.hidden ? 'Hidden vault password' : 'Master password',
                       suffixIcon: IconButton(
-                        icon: Icon(
-                          _secretVisible
-                              ? Icons.visibility_off
-                              : Icons.visibility,
-                        ),
-                        onPressed: () =>
-                            setState(() => _secretVisible = !_secretVisible),
+                        icon: Icon(_secretVisible ? Icons.visibility_off : Icons.visibility),
+                        onPressed: () => setState(() => _secretVisible = !_secretVisible),
                       ),
                     ),
                     onSubmitted: (_) => _unlockWithPassword(),
@@ -498,17 +406,10 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
                         ? SizedBox(
                             width: 16,
                             height: 16,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: cs.onPrimary,
-                            ),
+                            child: CircularProgressIndicator(strokeWidth: 2, color: cs.onPrimary),
                           )
                         : const Icon(Icons.password),
-                    label: Text(
-                      _passwordBusy
-                          ? 'Unlocking\u2026'
-                          : 'Unlock with password',
-                    ),
+                    label: Text(_passwordBusy ? 'Unlocking\u2026' : 'Unlock with password'),
                   ),
 
                   const SizedBox(height: 16),
@@ -516,19 +417,13 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
                   TextButton(
                     onPressed: () {
                       setState(() {
-                        _mode = _mode == _VaultMode.hidden
-                            ? _VaultMode.main
-                            : _VaultMode.hidden;
+                        _mode = _mode == _VaultMode.hidden ? _VaultMode.main : _VaultMode.hidden;
                         _error = null;
                         _secret.clear();
                         _secretVisible = false;
                       });
                     },
-                    child: Text(
-                      _mode == _VaultMode.hidden
-                          ? 'Return to main vault'
-                          : 'Open hidden vault',
-                    ),
+                    child: Text(_mode == _VaultMode.hidden ? 'Return to main vault' : 'Open hidden vault'),
                   ),
                 ],
               ),
@@ -571,9 +466,7 @@ class _BiometricCard extends StatelessWidget {
             color: cs.surfaceContainerHighest.withValues(alpha: 0.4),
             borderRadius: BorderRadius.circular(20),
             border: Border.all(
-              color: busy
-                  ? cs.primary.withValues(alpha: 0.5)
-                  : cs.outlineVariant.withValues(alpha: 0.5),
+              color: busy ? cs.primary.withValues(alpha: 0.5) : cs.outlineVariant.withValues(alpha: 0.5),
             ),
           ),
           child: Column(
@@ -585,40 +478,25 @@ class _BiometricCard extends StatelessWidget {
                         key: const ValueKey('loading'),
                         width: 52,
                         height: 52,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 3,
-                          color: cs.primary,
-                        ),
+                        child: CircularProgressIndicator(strokeWidth: 3, color: cs.primary),
                       )
                     : Container(
                         key: const ValueKey('icon'),
                         width: 64,
                         height: 64,
-                        decoration: BoxDecoration(
-                          color: cs.primary.withValues(alpha: 0.12),
-                          shape: BoxShape.circle,
-                        ),
-                        child: Icon(
-                          icon,
-                          size: 36,
-                          color: cs.primary,
-                        ),
+                        decoration: BoxDecoration(color: cs.primary.withValues(alpha: 0.12), shape: BoxShape.circle),
+                        child: Icon(icon, size: 36, color: cs.primary),
                       ),
               ),
               const SizedBox(height: 16),
               Text(
                 busy ? 'Authenticating\u2026' : 'Login with $label',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
-                  color: busy ? cs.primary : cs.onSurface,
-                ),
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700, color: busy ? cs.primary : cs.onSurface),
               ),
               const SizedBox(height: 4),
               Text(
                 busy ? 'Check your device' : 'Fast, secure unlock',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: cs.onSurface.withValues(alpha: 0.5),
-                ),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurface.withValues(alpha: 0.5)),
               ),
             ],
           ),

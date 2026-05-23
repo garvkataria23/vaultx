@@ -3,8 +3,10 @@ import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:provider/provider.dart';
 
+import '../models/auth.dart';
 import '../services/services.dart';
-import '../theme/theme_provider.dart';
+import '../theme/themes.dart';
+
 import '../widgets/widgets.dart';
 import 'screens.dart';
 
@@ -172,6 +174,47 @@ class VaultXApp extends StatelessWidget {
       builder: (context, child) =>
           FloatingNotificationHost(child: child ?? const SizedBox.shrink()),
       home: const VaultBootstrap(),
+      onGenerateRoute: (settings) {
+        final args = settings.arguments as Map<String, dynamic>? ?? {};
+        
+        switch (settings.name) {
+          case NavigationService.routeHome:
+            return MaterialPageRoute(builder: (_) => const VaultBootstrap());
+          case NavigationService.routeDrive:
+            return MaterialPageRoute(
+              builder: (_) => DriveScreen(
+                auth: args['auth'] as VaultAuthService,
+                drive: args['drive'] as DriveService?,
+                passwordVault: args['passwordVault'] as PasswordVaultService?,
+                itemActions: args['itemActions'] as ItemActionService?,
+                isDecoy: args['isDecoy'] as bool? ?? false,
+              ),
+            );
+          case NavigationService.routeSecurity:
+            return MaterialPageRoute(
+              builder: (_) => SecurityLogsScreen(
+                auth: args['auth'] as VaultAuthService,
+                isDecoy: args['isDecoy'] as bool? ?? false,
+              ),
+            );
+          case NavigationService.routeSettings:
+            return MaterialPageRoute(
+              builder: (_) => SettingsScreen(
+                auth: args['auth'] as VaultAuthService,
+                repo: args['repo'] as VaultRepository?,
+                posture: args['posture'] as Map<String, dynamic>? ?? {},
+                onDataChanged: args['onDataChanged'] as Future<void> Function()? ?? () async {},
+                vaultKind: args['vaultKind'] as VaultKind? ?? VaultKind.main,
+                trashService: args['trashService'] as TrashService?,
+                onGoHome: args['onGoHome'] as VoidCallback?,
+              ),
+            );
+          case NavigationService.routeGame:
+            return MaterialPageRoute(builder: (_) => const VaultXGameScreen());
+          default:
+            return null;
+        }
+      },
     );
   }
 }

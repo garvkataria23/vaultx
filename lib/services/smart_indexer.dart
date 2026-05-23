@@ -297,6 +297,10 @@ class SmartIndexerService {
       scoreField(note.body, 'body');
       scoreField(note.folder, 'folder');
 
+      for (final item in note.checklist) {
+        scoreField(item.text, 'checklist item');
+      }
+
       for (final tag in note.tags) {
         scoreField(tag, 'tag');
       }

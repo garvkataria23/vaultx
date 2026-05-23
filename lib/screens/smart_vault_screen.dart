@@ -7,6 +7,7 @@ import 'package:record/record.dart' as record;
 
 import '../models/models.dart';
 import '../services/services.dart';
+import '../services/ai_navigation_service.dart';
 import 'note_editor.dart';
 
 class SmartVaultScreen extends StatefulWidget {
@@ -14,6 +15,8 @@ class SmartVaultScreen extends StatefulWidget {
   final VaultRepository? repo;
   final EncryptedBlobService? blobs;
   final VaultKind vaultKind;
+  final VaultAuthService auth;
+  final AuthResult? authResult;
 
   const SmartVaultScreen({
     super.key,
@@ -21,6 +24,8 @@ class SmartVaultScreen extends StatefulWidget {
     this.repo,
     this.blobs,
     required this.vaultKind,
+    required this.auth,
+    this.authResult,
   });
 
   @override
@@ -57,11 +62,37 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
   late Animation<double> _orbFloat;
   late Animation<double> _orbPulse;
 
+  DriveService? _drive;
+  PasswordVaultService? _passwordVault;
+  ItemActionService? _itemActions;
+  TrashService? _trash;
+
   List<String> get _suggestions => _service.getSuggestions(widget.notes);
 
   @override
   void initState() {
     super.initState();
+
+    if (widget.authResult != null && widget.authResult!.masterKey != null) {
+      final masterKey = widget.authResult!.masterKey!;
+      _drive = DriveService(masterKey, widget.vaultKind);
+      _passwordVault = PasswordVaultService(masterKey, widget.vaultKind);
+      if (widget.repo != null && _drive != null) {
+        _itemActions = ItemActionService(
+          repo: widget.repo!,
+          drive: _drive!,
+          masterKey: masterKey,
+        );
+      }
+      if (widget.repo != null && _drive != null && _passwordVault != null) {
+        _trash = TrashService(
+          repo: widget.repo!,
+          drive: _drive!,
+          passwords: _passwordVault!,
+          vaultKind: widget.vaultKind,
+        );
+      }
+    }
 
     _orbController = AnimationController(
       vsync: this,
@@ -136,6 +167,34 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
 
     try {
       final result = await _service.processQuery(trimmed, widget.notes);
+
+      if (result.type == 'navigate') {
+        final intent = IntentParser.parse(trimmed);
+        if (mounted) {
+          final success = await ActionExecutor.execute(
+            context,
+            intent,
+            arguments: {
+              'auth': widget.auth,
+              'repo': widget.repo,
+              'drive': _drive,
+              'passwordVault': _passwordVault,
+              'itemActions': _itemActions,
+              'trashService': _trash,
+              'isDecoy': widget.vaultKind == VaultKind.decoy,
+              'vaultKind': widget.vaultKind,
+              'onDataChanged': () async {}, // Placeholder
+            },
+          );
+          if (success) {
+            setState(() {
+              _isProcessing = false;
+              _statusText = '';
+            });
+            return;
+          }
+        }
+      }
 
       if (!mounted) return;
       setState(() {

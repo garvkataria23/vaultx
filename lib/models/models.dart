@@ -2,6 +2,7 @@ export '../screens/vaultx_app.dart' show VaultAppState;
 export 'auth.dart' show AuthResult, VaultKind;
 export 'backup.dart'
     show
+        CloudProvider,
         BackupComponent,
         BackupOperationState,
         ComponentProgress,

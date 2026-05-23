@@ -14,6 +14,7 @@ import 'package:flutter/foundation.dart';
 
 import 'audit_log.dart';
 import 'backup_change_tracker.dart';
+import 'search_index_service.dart';
 
 /// CRUD operations for encrypted notes in Hive storage.
 ///
@@ -274,6 +275,7 @@ class VaultRepository {
     });
     // Invalidate ALL cache entries for this note (new salt = new cache key)
     _decryptCache.removeWhere((key, _) => key.startsWith('${note.id}:'));
+    await SearchIndexService.instance.indexNote(note);
     await AuditLog.write('Encrypted note saved');
     final size = utf8.encode(jsonEncode(note.toJson())).length;
     BackupChangeTracker.instance.notifyNotesChanged(estimatedBytes: size);
@@ -298,6 +300,7 @@ class VaultRepository {
       };
       
       _decryptCache.removeWhere((key, _) => key.startsWith('${note.id}:'));
+      await SearchIndexService.instance.indexNote(note);
       totalSize += utf8.encode(jsonEncode(note.toJson())).length;
     }
 
@@ -351,6 +354,7 @@ class VaultRepository {
   Future<void> _deletePermanently(String id) async {
     // Remove all cache entries for this note
     _decryptCache.removeWhere((key, _) => key.startsWith('$id:'));
+    await SearchIndexService.instance.removeNote(id);
     await _box.delete('$_prefix:$id');
     BackupChangeTracker.instance.notifyNotesChanged();
   }

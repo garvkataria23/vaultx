@@ -96,8 +96,14 @@ class BackupService {
     final box = Hive.box('vaultx_settings');
     final includeNotes = box.get('backupIncludeNotes', defaultValue: true) as bool;
     final includeHidden = box.get('backupIncludeHidden', defaultValue: true) as bool;
-    final includeDrive = box.get('backupIncludeDrive', defaultValue: true) as bool;
-    final includeMedia = box.get('backupIncludeMedia', defaultValue: true) as bool;
+
+    final manifest = BackupManifest(
+      createdAt: DateTime.now(),
+      deviceId: deviceId,
+      checksums: checksums,
+      totalSizeBytes: 0, // Will be updated at the end
+      counts: counts,
+    );
 
     void report() {
       onProgress?.call(BackupProgress(components: components));
@@ -428,13 +434,6 @@ class BackupService {
       _log('BACKUP passwordEntries ERROR: $e\n$st');
     }
 
-    final manifest = BackupManifest(
-      createdAt: DateTime.now(),
-      deviceId: deviceId,
-      checksums: checksums,
-      totalSizeBytes: _estimateTotalSize(data),
-      counts: counts,
-    );
     data['manifest'] = manifest.toJson();
 
     return (data: data, manifest: manifest);
@@ -2445,15 +2444,5 @@ class BackupService {
       if (a[i] != b[i]) return false;
     }
     return true;
-  }
-
-  int _estimateTotalSize(Map<String, dynamic> data) {
-    var total = 0;
-    for (final entry in data.entries) {
-      try {
-        total += utf8.encode(jsonEncode(entry.value)).length;
-      } catch (_) {}
-    }
-    return total;
   }
 }

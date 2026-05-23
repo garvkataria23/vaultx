@@ -59,4 +59,5 @@ export 'summarization_service.dart' show SummarizationService;
 export 'smart_vault_service.dart' show SmartVaultService, SmartVaultResult, AIMemory;
 export 'trash_service.dart' show TrashService, TrashItem;
 export 'navigation_service.dart' show NavigationService;
+export 'browser_extension_service.dart' show BrowserExtensionService;
 

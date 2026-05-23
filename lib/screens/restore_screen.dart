@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
@@ -877,15 +875,12 @@ class _RestoreScreenState extends State<RestoreScreen> {
             const SizedBox(height: 24),
             FilledButton(
               onPressed: () {
-                debugPrint('RESTORE UI: "Open vault" pressed after success');
-                final key = _restoreInfo?.masterKey;
-                if (key != null) {
-                  Navigator.of(context).pop(base64Encode(key));
-                } else {
-                  Navigator.of(context).pop('success');
+                debugPrint('RESTORE UI: "View Notes" pressed after success');
+                if (mounted) {
+                  Navigator.of(context).pop('view');
                 }
               },
-              child: const Text('Open vault'),
+              child: const Text('View Notes'),
             ),
           ],
         ),

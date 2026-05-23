@@ -1,9 +1,5 @@
 import 'dart:async';
-import 'package:hive_flutter/hive_flutter.dart';
-import '../models/auth.dart';
-import '../models/drive_file.dart';
-import '../models/note.dart';
-import '../models/password_entry.dart';
+import '../models/models.dart';
 import 'drive_service.dart';
 import 'vault_repository.dart';
 import 'password_vault_service.dart';

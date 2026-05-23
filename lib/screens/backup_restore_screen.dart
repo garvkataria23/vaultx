@@ -1,5 +1,3 @@
-import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
@@ -265,6 +263,10 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     if (restored != null) {
       debugPrint('BACKUP_SCREEN: Cloud restore successful, triggering UI refresh');
       if (widget.onDataChanged != null) await widget.onDataChanged!();
+      
+      if (restored == 'view' && mounted) {
+        Navigator.of(context).pop('view');
+      }
     }
     
     await _refreshVersions();
@@ -332,10 +334,14 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
           if (widget.onDataChanged != null) await widget.onDataChanged!();
           
           if (!mounted) return;
-          await showDialog<String>(
+          final result = await showDialog<String>(
             context: context,
             builder: (_) => ImportSuccessDialog(stats: stats),
           );
+
+          if (result == 'view' && mounted) {
+            Navigator.of(context).pop('view');
+          }
         } else {
           FloatingNotificationService.instance.show('No notes imported. Check if ZIP contains supported files.', error: true);
         }

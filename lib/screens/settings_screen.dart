@@ -11,9 +11,9 @@ import '../theme/theme_picker.dart';
 import '../widgets/widgets.dart';
 import 'backup_restore_screen.dart';
 import 'privacy_policy_screen.dart';
-import 'security_logs_screen.dart';
 import 'setup_screen.dart';
 import 'trash_screen.dart';
+import 'login_screen.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Dead Man Switch guard
@@ -84,6 +84,7 @@ class SettingsScreen extends StatefulWidget {
     this.vaultKind,
     this.onSwitchVault,
     this.trashService,
+    this.onGoHome,
   });
   final VaultAuthService auth;
   final VaultRepository? repo;
@@ -92,6 +93,7 @@ class SettingsScreen extends StatefulWidget {
   final VaultKind? vaultKind;
   final void Function(VaultKind)? onSwitchVault;
   final TrashService? trashService;
+  final VoidCallback? onGoHome;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -102,11 +104,6 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
   final _hiddenPasswordConfirmCtrl = TextEditingController();
   bool _hiddenPasswordVisible = false;
   bool _hiddenPasswordConfirmVisible = false;
-
-  final _decoyPasswordCtrl = TextEditingController();
-  final _decoyPasswordConfirmCtrl = TextEditingController();
-  bool _decoyPasswordVisible = false;
-  bool _decoyPasswordConfirmVisible = false;
 
   bool _biometricEnabled = false;
   bool _biometricHardwareAvailable = false;
@@ -122,11 +119,9 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
   TimeOfDay _timeStart = const TimeOfDay(hour: 8, minute: 0);
   TimeOfDay _timeEnd = const TimeOfDay(hour: 22, minute: 0);
   bool _intruderCaptureEnabled = false;
-  int _intruderCaptureThreshold = 3;
   String _failedAttemptNotifications = 'persistent';
   bool _decoyCalculatorEnabled = false;
   bool _decoyCalculatorHistory = true;
-  String _decoyCalculatorTrigger = 'pin';
   final _decoyCalculatorSecretCtrl = TextEditingController();
   int _lockMinutes =
       Hive.box('vaultx_settings').get('lockMinutes', defaultValue: 1) as int;
@@ -153,8 +148,6 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
   void dispose() {
     _hiddenPasswordCtrl.dispose();
     _hiddenPasswordConfirmCtrl.dispose();
-    _decoyPasswordCtrl.dispose();
-    _decoyPasswordConfirmCtrl.dispose();
     _deadMansEmailCtrl.dispose();
     _deadMansMessageCtrl.dispose();
     _decoyCalculatorSecretCtrl.dispose();
@@ -185,8 +178,6 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
       );
       _intruderCaptureEnabled =
           box.get('intruderCaptureEnabled', defaultValue: false) as bool;
-      _intruderCaptureThreshold =
-          box.get('intruderCaptureThreshold', defaultValue: 3) as int;
       _failedAttemptNotifications =
           box.get('failedAttemptNotifications', defaultValue: 'persistent')
               as String;
@@ -197,8 +188,6 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
           box.get('decoyCalculatorEnabled', defaultValue: false) as bool;
       _decoyCalculatorHistory =
           box.get('decoyCalculatorHistory', defaultValue: true) as bool;
-      _decoyCalculatorTrigger =
-          box.get('decoyCalculatorTrigger', defaultValue: 'pin') as String;
       _decoyCalculatorSecretCtrl.text =
           box.get('decoyCalculatorSecret', defaultValue: '0000') as String;
     });
@@ -271,13 +260,6 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
     }
   }
 
-  String get _deadMansActionLabel {
-    switch (_deadMansAction) {
-      case 'email_and_wipe': return 'Email & Wipe';
-      default: return 'Wipe Only';
-    }
-  }
-
   Future<void> _loadBiometricStatus() async {
     if (!mounted) return;
     final hardwareAvailable = await widget.auth.biometricAvailable();
@@ -301,22 +283,13 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
       barrierDismissible: false,
       builder: (_) => _BiometricPasswordDialog(enable: enable),
     );
-    if (result == null || result.isEmpty) {
+    if (result == null || result.isEmpty || !mounted) {
       _biometricBusy = false;
       return;
     }
-    if (!mounted) {
-      _biometricBusy = false;
-      return;
-    }
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      try {
-        if (!mounted) return;
-        await _doToggleBiometric(enable, result);
-      } finally {
-        _biometricBusy = false;
-      }
-    });
+    
+    await _doToggleBiometric(enable, result);
+    _biometricBusy = false;
   }
 
   Future<void> _doToggleBiometric(bool enable, String password) async {
@@ -557,11 +530,40 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
         Divider(height: 32, color: Theme.of(context).colorScheme.outlineVariant),
         Text('Appearance', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 4),
-        ThemePickerTile(),
+        const ThemePickerTile(),
         Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: OutlinedButton.icon(onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CustomThemeCreatorScreen())), icon: const Icon(Icons.auto_awesome), label: const Text('Create custom theme'))),
         const SizedBox(height: 12),
 
         _BiometricSection(auth: widget.auth, enabled: _biometricEnabled, hardwareAvailable: _biometricHardwareAvailable, enrolled: _biometricEnrolled, biometricType: _biometricTypeLabel, onToggle: _toggleBiometric),
+        const Divider(height: 32),
+
+        ListTile(
+          leading: Icon(Icons.password, color: Theme.of(context).colorScheme.primary),
+          title: const Text('Change Master Password'),
+          subtitle: const Text('Update your main vault unlock password'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () async {
+            if (widget.repo == null) {
+              _notify('Password change unavailable in decoy mode', error: true);
+              return;
+            }
+            final success = await showDialog<bool>(
+              context: context,
+              barrierDismissible: false,
+              builder: (_) => _ChangePasswordDialog(auth: widget.auth),
+            );
+            
+            if (success == true && mounted) {
+              _notify('Password changed successfully');
+              // Force relock for security
+              Navigator.pushAndRemoveUntil(
+                context,
+                MaterialPageRoute(builder: (_) => LoginScreen(auth: widget.auth)),
+                (_) => false,
+              );
+            }
+          },
+        ),
         const Divider(height: 32),
 
         // ── Backup & Restore (CONSOLIDATED) ──────────────────────────────────
@@ -577,7 +579,11 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
             }
             final authenticated = await _authenticateForAction('Authenticate Backup & Restore');
             if (!authenticated || !mounted) return;
-            Navigator.of(context).push(MaterialPageRoute(builder: (_) => BackupRestoreScreen(masterKey: widget.repo!.masterKey, kind: widget.repo!.kind, authService: widget.auth, repo: widget.repo, onDataChanged: widget.onDataChanged)));
+            final result = await Navigator.of(context).push(MaterialPageRoute(builder: (_) => BackupRestoreScreen(masterKey: widget.repo!.masterKey, kind: widget.repo!.kind, authService: widget.auth, repo: widget.repo, onDataChanged: widget.onDataChanged)));
+            if (result == 'view' && mounted) {
+              widget.onGoHome?.call();
+            }
+
           },
         ),
         const Divider(height: 32),
@@ -638,7 +644,12 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
         SwitchListTile(value: _timeAccess, onChanged: (v) async { setState(() => _timeAccess = v); await Hive.box('vaultx_settings').put('timeAccess', v); }, title: const Text('Time-based note access')),
         if (_timeAccess) Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: OutlinedButton.icon(onPressed: _pickTimeWindow, icon: const Icon(Icons.access_time), label: Text('Set time window (${_formatTOD(_timeStart)} – ${_formatTOD(_timeEnd)})'))),
 
-        SwitchListTile(value: _deadMansSwitch, onChanged: _toggleDeadMansSwitch, title: const Text('Dead man switch')),
+        SwitchListTile(
+          value: _deadMansSwitch,
+          onChanged: _toggleDeadMansSwitch,
+          title: const Text('Dead man switch'),
+          subtitle: _deadMansSwitch ? Text('Period: ${_deadMansDayLabel(_deadMansDays)}, Action: $_deadMansAction') : null,
+        ),
         const Divider(height: 32),
 
         SwitchListTile(value: _intruderCaptureEnabled, onChanged: (val) async { await Hive.box('vaultx_settings').put('intruderCaptureEnabled', val); if (mounted) setState(() => _intruderCaptureEnabled = val); }, title: const Text('Intruder selfie capture')),
@@ -713,7 +724,7 @@ class _BiometricSection extends StatelessWidget {
   const _BiometricSection({required this.auth, required this.enabled, required this.hardwareAvailable, required this.enrolled, required this.biometricType, required this.onToggle});
   final VaultAuthService auth; final bool enabled; final bool hardwareAvailable; final bool enrolled; final String biometricType; final ValueChanged<bool> onToggle;
   @override
-  Widget build(BuildContext context) { final cs = Theme.of(context).colorScheme; final available = hardwareAvailable && enrolled; return Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Biometric Authentication', style: const TextStyle(fontWeight: FontWeight.bold)), SwitchListTile(value: enabled, onChanged: available ? onToggle : null, title: Text('Enable $biometricType'))]))); }
+  Widget build(BuildContext context) { final available = hardwareAvailable && enrolled; return Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('Biometric Authentication', style: TextStyle(fontWeight: FontWeight.bold)), SwitchListTile(value: enabled, onChanged: available ? onToggle : null, title: Text('Enable $biometricType'))]))); }
 }
 
 class _DeadMansEmailDialog extends StatefulWidget {
@@ -739,4 +750,151 @@ class _BiometricPasswordDialogState extends State<_BiometricPasswordDialog> {
   final _controller = TextEditingController();
   @override
   Widget build(BuildContext context) { return AlertDialog(title: Text(widget.enable ? 'Enable Biometrics' : 'Disable Biometrics'), content: TextField(controller: _controller, obscureText: true, decoration: const InputDecoration(labelText: 'Password')), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(context, _controller.text), child: const Text('Confirm'))]); }
+}
+
+class _ChangePasswordDialog extends StatefulWidget {
+  final VaultAuthService auth;
+  const _ChangePasswordDialog({required this.auth});
+
+  @override
+  State<_ChangePasswordDialog> createState() => _ChangePasswordDialogState();
+}
+
+class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
+  final _currentCtrl = TextEditingController();
+  final _newCtrl = TextEditingController();
+  final _confirmCtrl = TextEditingController();
+  bool _loading = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _currentCtrl.dispose();
+    _newCtrl.dispose();
+    _confirmCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final current = _currentCtrl.text;
+    final newPass = _newCtrl.text;
+    final confirm = _confirmCtrl.text;
+
+    if (current.isEmpty) {
+      setState(() => _error = 'Current password required');
+      return;
+    }
+    if (newPass.length < 6) {
+      setState(() => _error = 'New password must be 6+ characters');
+      return;
+    }
+    if (newPass != confirm) {
+      setState(() => _error = 'Passwords do not match');
+      return;
+    }
+    if (current == newPass) {
+      setState(() => _error = 'New password must be different');
+      return;
+    }
+
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+
+    try {
+      final success = await widget.auth.changeMasterPassword(
+        currentPassword: current,
+        newPassword: newPass,
+      );
+
+      if (!mounted) return;
+
+      if (success) {
+        Navigator.of(context).pop(true);
+      } else {
+        setState(() {
+          _loading = false;
+          _error = 'Incorrect current password or update failed';
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = 'An error occurred during password update';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Change Master Password'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Text(
+                  _error!,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.error,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            TextField(
+              controller: _currentCtrl,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'Current Password',
+                helperText: 'Required to verify ownership',
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _newCtrl,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'New Password',
+                helperText: 'Minimum 6 characters recommended',
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _confirmCtrl,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'Confirm New Password',
+              ),
+            ),
+            if (_loading)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Column(
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(height: 8),
+                    Text('Updating password...', style: TextStyle(fontSize: 12)),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _loading ? null : () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _loading ? null : _submit,
+          child: const Text('Change Password'),
+        ),
+      ],
+    );
+  }
 }

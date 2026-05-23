@@ -281,7 +281,55 @@ class VaultAuthService {
     await AuditLog.write('Decoy password updated');
   }
 
-  // Kept for backward compatibility with existing vaults that have a PIN set.
+  /// Re-wraps the existing master key with a new password-derived key.
+  /// Does NOT change the master key itself, so vault data remains compatible.
+  Future<bool> changeMasterPassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    // 1. Verify current password and get master key
+    final authResult = await unlockWithPassword(currentPassword);
+    if (!authResult.ok || authResult.masterKey == null) {
+      await AuditLog.write('PASSWORD_VERIFY_FAILED');
+      return false;
+    }
+    await AuditLog.write('PASSWORD_VERIFY_SUCCESS');
+    await AuditLog.write('PASSWORD_CHANGE_STARTED');
+
+    final masterKey = authResult.masterKey!;
+    final oldSalt = await _readSecure('passwordSalt');
+    final oldWrapped = await _readSecure('wrappedMaster.password');
+
+    try {
+      // 2. Generate new salt and derive new key
+      final newSalt = base64Encode(_crypto.randomBytes(16));
+      final newPasswordKey = await _crypto.deriveCredentialKey(newPassword, newSalt);
+
+      // 3. Wrap existing master key with new password key
+      final newWrapped = jsonEncode(
+        _crypto.encryptJson({'k': base64Encode(masterKey)}, newPasswordKey),
+      );
+
+      // 4. Persist
+      await _writeSecure('passwordSalt', newSalt);
+      await _writeSecure('wrappedMaster.password', newWrapped);
+
+      _crypto.wipe(newPasswordKey);
+      await AuditLog.write('PASSWORD_CHANGED');
+      return true;
+    } catch (e) {
+      // Rollback
+      if (oldSalt != null) await _writeSecure('passwordSalt', oldSalt);
+      if (oldWrapped != null) await _writeSecure('wrappedMaster.password', oldWrapped);
+      await AuditLog.write('PASSWORD_CHANGE_FAILED: $e');
+      return false;
+    } finally {
+      _crypto.wipe(masterKey);
+    }
+    }
+
+    // Kept for backward compatibility with existing vaults that have a PIN set.
+
   Future<void> setPin(String pin, Uint8List masterKey) async {
     final salt = base64Encode(_crypto.randomBytes(16));
     await _writeSecure('pinSalt', salt);

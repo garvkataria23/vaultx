@@ -49,6 +49,7 @@ class SearchIndexService {
       note.ocrText,
       note.transcript,
       note.summary,
+      ...note.checklist.map((e) => e.text),
       ...note.tags,
     ].where((s) => s.isNotEmpty).join(' ');
     

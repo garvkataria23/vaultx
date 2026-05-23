@@ -77,6 +77,7 @@ class SmartVaultService {
     {'pattern': r'(?i)(from|since|last|past|this|previous)\s+(week|month|year|day|today|yesterday)', 'intent': 'timeline'},
     {'pattern': r'(?i)(ask|tell|what|who|when|where|why|how|did|does|is|are)\s+', 'intent': 'ask'},
     {'pattern': r'(?i)(find|show|get|search|display|list)\s+.*(note|notes)', 'intent': 'search'},
+    {'pattern': r'(?i)(open|go\s+to|navigate\s+to)\s+(home|drive|security|settings|game)', 'intent': 'navigate'},
   ];
 
   String _detectIntent(String query) {
@@ -562,6 +563,8 @@ class SmartVaultService {
         return _handleVoice(activeNotes);
       case 'connections':
         return _handleConnections(activeNotes);
+      case 'navigate':
+        return _handleNavigate(query);
       case 'memory':
         return SmartVaultResult(type: 'memory', title: 'Say "pin [topic]" or "remember [topic]" to set AI memory', notes: []);
       case 'recent':
@@ -948,6 +951,22 @@ class SmartVaultService {
       title: 'Today\'s activity',
       subtitle: 'You worked on ${todayNotes.length} notes today',
       notes: todayNotes,
+    );
+  }
+
+  Future<SmartVaultResult> _handleNavigate(String query) async {
+    final lower = query.toLowerCase();
+    String target = 'Unknown';
+    if (lower.contains('home')) target = 'Home';
+    if (lower.contains('drive')) target = 'Drive';
+    if (lower.contains('security')) target = 'Security';
+    if (lower.contains('settings')) target = 'Settings';
+    if (lower.contains('game')) target = 'VaultX Game';
+
+    return SmartVaultResult(
+      type: 'navigate',
+      title: 'Navigating to $target',
+      subtitle: 'Executing navigation intent...',
     );
   }
 

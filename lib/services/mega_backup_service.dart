@@ -593,15 +593,21 @@ class MEGABackupService extends BaseCloudBackupProvider {
         final name = (node['name'] ?? '').toString();
         final lowerName = name.toLowerCase();
         
-        final isValid = lowerName.endsWith('.vxbin') ||
+        // Genuine backup root files: .vxbin, .vxbackup, or chunked manifest _m.dat
+        final isRoot = lowerName.endsWith('.vxbin') ||
             lowerName.endsWith('.vxbackup') ||
             lowerName.endsWith('_m.dat');
+
+        if (!isRoot) {
+          continue;
+        }
 
         final handle = (node['handle'] ?? '').toString();
         final size = (node['size'] as num?)?.toInt() ?? 0;
         final ts = (node['modificationTime'] as num?)?.toInt() ?? 0;
 
-        if (!isValid && size <= 0) {
+        // Skip files that are not manifests and have no data
+        if (size <= 0 && !lowerName.endsWith('_m.dat')) {
           continue;
         }
 
@@ -692,22 +698,34 @@ class MEGABackupService extends BaseCloudBackupProvider {
 
   @override
   Future<int> pruneBackups({int keepCount = 3}) async {
-    debugPrint('BACKUP CLEANUP START (MEGA)');
+    debugPrint('MEGA_CLEANUP_START: keepCount=$keepCount');
+    
+    // 1. Refresh SDK state to ensure we see the latest upload and any deletions
+    await _sdk.fetchNodes();
+
+    // 2. Fetch genuine backups using the strict listBackups filter
     final versions = await listBackups();
-    debugPrint('FOUND ${versions.length} BACKUPS');
+    
+    // Log found backups for diagnostics
+    for (var i = 0; i < versions.length; i++) {
+      debugPrint('BACKUP_FOUND: index=$i filename=${versions[i].fileName} modifiedTime=${versions[i].createdAt}');
+      debugPrint('BACKUP_ORDER: index=$i');
+    }
 
     if (versions.length <= keepCount) {
-      debugPrint('FINAL BACKUP COUNT: ${versions.length}');
+      debugPrint('FINAL_BACKUP_COUNT: ${versions.length}');
       return 0;
     }
 
+    // 3. Identify and delete targets (everything beyond the latest 3)
     var deleted = 0;
-    for (var i = keepCount; i < versions.length; i++) {
+    final toRemove = versions.skip(keepCount).toList();
+    
+    for (final version in toRemove) {
       try {
-        final version = versions[i];
-        debugPrint('DELETE OLD BACKUP: ${version.fileName}');
+        debugPrint('MEGA_DELETE_TARGET: ${version.fileName} (id=${version.driveFileId})');
 
-        // If it's a manifest, delete associated parts first
+        // If it's a chunked manifest, delete associated parts first to prevent orphaned files
         if (version.fileName.endsWith('_m.dat')) {
           final cloudBaseName = version.fileName.replaceAll('_m.dat', '');
           await _deleteParts(cloudBaseName);
@@ -715,18 +733,21 @@ class MEGABackupService extends BaseCloudBackupProvider {
 
         final result = await _sdk.deleteNode(version.driveFileId);
         if (result['success'] == true) {
-          debugPrint('DELETE SUCCESS: ${version.fileName}');
+          debugPrint('DELETE_SUCCESS: ${version.fileName}');
           deleted++;
         } else {
-          debugPrint('DELETE FAILED: ${version.fileName} - ${result['error']}');
+          debugPrint('DELETE_FAILED: ${version.fileName} - ${result['error']}');
         }
       } catch (e) {
-        debugPrint('MEGA SDK PRUNE ERROR: ${versions[i].driveFileId}: $e');
+        debugPrint('MEGA SDK PRUNE ERROR: ${version.driveFileId}: $e');
       }
     }
     
-    final finalCount = versions.length - deleted;
-    debugPrint('FINAL BACKUP COUNT: $finalCount');
+    // 4. Force one final refresh to verify the results
+    await _sdk.fetchNodes();
+    final finalVersions = await listBackups();
+    debugPrint('FINAL_BACKUP_COUNT: ${finalVersions.length}');
+    
     return deleted;
   }
 
