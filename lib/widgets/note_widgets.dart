@@ -248,6 +248,7 @@ class ModernNoteCard extends StatelessWidget {
     this.isGrid = false,
     this.category,
     this.isSelected = false,
+    this.isSelectionMode = false,
     this.onSelectionToggle,
   });
 
@@ -263,6 +264,7 @@ class ModernNoteCard extends StatelessWidget {
   final bool isGrid;
   final String? category;
   final bool isSelected;
+  final bool isSelectionMode;
   final VoidCallback? onSelectionToggle;
 
   @override
@@ -288,7 +290,7 @@ class ModernNoteCard extends StatelessWidget {
         }
       },
       child: GestureDetector(
-        onTap: isSelected ? onSelectionToggle : onTap,
+        onTap: (isSelected || isSelectionMode) ? onSelectionToggle : onTap,
         onLongPress: () {
           HapticFeedback.heavyImpact();
           onSelectionToggle?.call();
@@ -297,21 +299,34 @@ class ModernNoteCard extends StatelessWidget {
           duration: const Duration(milliseconds: 200),
           margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
           decoration: BoxDecoration(
-            color: isSelected ? cs.primaryContainer.withValues(alpha: 0.7) : cs.surfaceContainerLow,
+            gradient: isSelected ? null : LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                cs.surfaceContainerLow,
+                cs.surfaceContainerHighest.withValues(alpha: 0.6),
+              ],
+            ),
+            color: isSelected ? cs.primaryContainer.withValues(alpha: 0.7) : null,
             borderRadius: BorderRadius.circular(20),
             border: Border.all(
               color: isSelected 
                   ? cs.primary 
                   : (note.pinned 
-                      ? cs.primary.withValues(alpha: 0.4) 
-                      : cs.outlineVariant.withValues(alpha: 0.3)),
+                      ? cs.primary.withValues(alpha: 0.5) 
+                      : cs.outlineVariant.withValues(alpha: 0.4)),
               width: (note.pinned || isSelected) ? 1.5 : 1,
             ),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withValues(alpha: 0.05),
-                blurRadius: isSelected ? 15 : 10,
-                offset: const Offset(0, 4),
+                color: Colors.black.withValues(alpha: 0.06),
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.04),
+                blurRadius: 20,
+                offset: const Offset(0, 8),
               ),
             ],
           ),
@@ -376,9 +391,16 @@ class ModernNoteCard extends StatelessWidget {
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                         decoration: BoxDecoration(
-                          color: isSelected 
-                              ? cs.primary.withValues(alpha: 0.1) 
-                              : cs.surfaceContainerHighest.withValues(alpha: 0.2),
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              Colors.transparent,
+                              isSelected 
+                                  ? cs.primary.withValues(alpha: 0.15)
+                                  : cs.surfaceContainerHighest.withValues(alpha: 0.4),
+                            ],
+                          ),
                           borderRadius: const BorderRadius.vertical(bottom: Radius.circular(20)),
                         ),
                         child: Row(

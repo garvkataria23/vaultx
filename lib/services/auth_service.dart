@@ -23,7 +23,7 @@ class VaultAuthService {
   final _localAuth = LocalAuthentication();
 
   /// Tracks consecutive secure storage failures to avoid aggressive Keystore resets.
-  int _storageFailureCount = 0;
+  static int _storageFailureCount = 0;
   static const int _maxStorageFailuresBeforeReset = 3;
 
   Future<bool> isInitialized() async {
@@ -322,15 +322,20 @@ class VaultAuthService {
       await unlockWithPassword(currentPassword),
     );
     if (!authResult.ok || authResult.masterKey == null) {
-      await AuditLog.write('PASSWORD_VERIFY_FAILED');
+      await AuditLog.write(
+        'PASSWORD_VERIFY_FAILED: vault_kind=${authResult.kind}',
+      );
       return false;
     }
-    await AuditLog.write('PASSWORD_VERIFY_SUCCESS');
+    await AuditLog.write(
+      'PASSWORD_VERIFY_SUCCESS: vault_kind=${authResult.kind}',
+    );
     await AuditLog.write('PASSWORD_CHANGE_STARTED');
 
     final masterKey = authResult.masterKey!;
     final oldSalt = await _readSecure('passwordSalt');
     final oldWrapped = await _readSecure('wrappedMaster.password');
+    final newLen = newPassword.length;
 
     try {
       // 2. Generate new salt and derive new key
@@ -347,7 +352,9 @@ class VaultAuthService {
       await _writeSecure('wrappedMaster.password', newWrapped);
 
       _crypto.wipe(newPasswordKey);
-      await AuditLog.write('PASSWORD_CHANGED');
+      await AuditLog.write(
+        'PASSWORD_CHANGED: vault_kind=${authResult.kind}, new_length=$newLen',
+      );
       return true;
     } catch (e) {
       // Rollback
@@ -358,7 +365,7 @@ class VaultAuthService {
     } finally {
       _crypto.wipe(masterKey);
     }
-    }
+  }
 
     // Kept for backward compatibility with existing vaults that have a PIN set.
 

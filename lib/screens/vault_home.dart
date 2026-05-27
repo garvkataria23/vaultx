@@ -75,8 +75,13 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
-    final savedMode = Hive.box('vaultx_settings').get('viewMode', defaultValue: 'grid') as String;
-    _viewMode = NoteViewMode.values.firstWhere((e) => e.name == savedMode, orElse: () => NoteViewMode.grid);
+    final savedMode = Hive.box('vaultx_settings').get('viewMode', defaultValue: 'list') as String;
+    if (savedMode == 'grid') {
+      Hive.box('vaultx_settings').delete('viewMode');
+      _viewMode = NoteViewMode.list;
+    } else {
+      _viewMode = NoteViewMode.values.firstWhere((e) => e.name == savedMode, orElse: () => NoteViewMode.list);
+    }
     _pageController = PageController(initialPage: _index);
     WidgetsBinding.instance.addObserver(this);
     widget.auth.isHiddenVaultConfigured().then((v) {
@@ -576,6 +581,56 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
     return types;
   }
 
+  void _showHomeFilterSheet() {
+    final folders = _cachedFolders.where((f) => f != 'All').toList();
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => _HomeFilterSheet(
+        noteType: _searchFilters.noteType,
+        folder: _searchFilters.folder,
+        sort: _searchFilters.sort ?? 'date',
+        category: _searchFilters.category,
+        pinned: _searchFilters.pinned,
+        favorite: _searchFilters.favorite,
+        hasAttachments: _searchFilters.hasAttachments,
+        folders: folders,
+        categories: _availableCategories,
+        onApply: (type, folder, sort, category, pinned, favorite, attachments) {
+          setState(() {
+            _searchFilters = _searchFilters.copyWith(
+              noteType: type,
+              folder: folder,
+              sort: sort,
+              category: category,
+              pinned: pinned,
+              favorite: favorite,
+              hasAttachments: attachments,
+            );
+            _folder = folder ?? 'All';
+            _sort = sort ?? 'date';
+            _activeFilterTypes = _updateActiveFilters();
+          });
+          Navigator.of(ctx).pop();
+          _runSearch();
+        },
+        onReset: () {
+          setState(() {
+            _searchFilters = const SearchFilters();
+            _folder = 'All';
+            _sort = 'date';
+            _activeFilterTypes = {};
+          });
+          Navigator.of(ctx).pop();
+          _runSearch();
+        },
+      ),
+    );
+  }
+
   void _wipeSessionKey() {
     final key = widget.authResult.masterKey;
     if (key != null && widget.authResult.kind != VaultKind.decoy) {
@@ -783,6 +838,28 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
                   onPressed: _load,
                   icon: const Icon(Icons.refresh),
                   tooltip: 'Refresh all notes',
+                ),
+                Stack(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.filter_list),
+                      onPressed: _showHomeFilterSheet,
+                      tooltip: 'Filters',
+                    ),
+                    if (_activeFilterTypes.isNotEmpty)
+                      Positioned(
+                        top: 6,
+                        right: 6,
+                        child: Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.primary,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
@@ -1130,6 +1207,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
                             notes: visibleNotes,
                             categories: _noteCategories,
                             selectedIds: _selectedIds,
+                            isSelectionMode: _selectedIds.isNotEmpty,
                             onSelectionToggle: _onSelectionToggle,
                             blobs: _blobs,
                             hasMore: showCount < filtered.length,
@@ -1260,6 +1338,256 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
       '$feature unavailable in decoy mode',
       type: AppNotificationType.info,
     );
+  }
+}
+
+class _HomeFilterSheet extends StatefulWidget {
+  final NoteType? noteType;
+  final String? folder;
+  final String sort;
+  final String? category;
+  final bool? pinned;
+  final bool? favorite;
+  final bool? hasAttachments;
+  final List<String> folders;
+  final List<String> categories;
+  final void Function(NoteType?, String?, String?, String?, bool?, bool?, bool?) onApply;
+  final VoidCallback onReset;
+
+  const _HomeFilterSheet({
+    required this.noteType,
+    required this.folder,
+    required this.sort,
+    required this.category,
+    required this.pinned,
+    required this.favorite,
+    required this.hasAttachments,
+    required this.folders,
+    required this.categories,
+    required this.onApply,
+    required this.onReset,
+  });
+
+  @override
+  State<_HomeFilterSheet> createState() => _HomeFilterSheetState();
+}
+
+class _HomeFilterSheetState extends State<_HomeFilterSheet> {
+  late NoteType? _type;
+  late String? _folder;
+  late String _sort;
+  late String? _category;
+  late bool? _pinned;
+  late bool? _favorite;
+  late bool? _attachments;
+
+  @override
+  void initState() {
+    super.initState();
+    _type = widget.noteType;
+    _folder = widget.folder;
+    _sort = widget.sort;
+    _category = widget.category;
+    _pinned = widget.pinned;
+    _favorite = widget.favorite;
+    _attachments = widget.hasAttachments;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: SizedBox(
+        height: 520,
+        child: Column(
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 12),
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: cs.onSurface.withValues(alpha: 0.2),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('Filters',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: cs.onSurface,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: widget.onReset,
+                    child: const Text('Reset'),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                children: [
+                  // Note Type
+                  Text('Note Type', style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                    color: cs.onSurface,
+                  )),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: [
+                      ChoiceChip(
+                        label: const Text('Any'),
+                        selected: _type == null,
+                        onSelected: (_) => setState(() => _type = null),
+                      ),
+                      ...NoteType.values.map((t) {
+                        final selected = _type == t;
+                        return ChoiceChip(
+                          label: Text(t.name[0].toUpperCase() + t.name.substring(1)),
+                          selected: selected,
+                          onSelected: (_) => setState(() => _type = t),
+                        );
+                      }),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Folder
+                  Text('Folder', style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                    color: cs.onSurface,
+                  )),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<String?>(
+                    value: _folder,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    ),
+                    isExpanded: true,
+                    items: [
+                      const DropdownMenuItem(value: null, child: Text('All folders')),
+                      ...widget.folders.map((f) =>
+                        DropdownMenuItem(value: f, child: Text(f))),
+                    ],
+                    onChanged: (v) => setState(() => _folder = v),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Sort
+                  Text('Sort By', style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                    color: cs.onSurface,
+                  )),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    children: ['date', 'title', 'type', 'priority'].map((s) {
+                      final selected = _sort == s;
+                      return ChoiceChip(
+                        label: Text(_sortLabel(s)),
+                        selected: selected,
+                        onSelected: (_) => setState(() => _sort = s),
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Category
+                  if (widget.categories.isNotEmpty) ...[
+                    Text('Category', style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                      color: cs.onSurface,
+                    )),
+                    const SizedBox(height: 8),
+                    DropdownButtonFormField<String?>(
+                      value: _category,
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      ),
+                      isExpanded: true,
+                      items: [
+                        const DropdownMenuItem(value: null, child: Text('All categories')),
+                        ...widget.categories.map((c) =>
+                          DropdownMenuItem(value: c, child: Text(c))),
+                      ],
+                      onChanged: (v) => setState(() => _category = v),
+                    ),
+                    const SizedBox(height: 20),
+                  ],
+
+                  // Toggles
+                  Text('Properties', style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                    color: cs.onSurface,
+                  )),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: [
+                      FilterChip(
+                        label: const Text('Pinned'),
+                        selected: _pinned == true,
+                        onSelected: (v) => setState(() => _pinned = v ? true : null),
+                      ),
+                      FilterChip(
+                        label: const Text('Favorites'),
+                        selected: _favorite == true,
+                        onSelected: (v) => setState(() => _favorite = v ? true : null),
+                      ),
+                      FilterChip(
+                        label: const Text('Has attachments'),
+                        selected: _attachments == true,
+                        onSelected: (v) => setState(() => _attachments = v ? true : null),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+              child: SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: () => widget.onApply(_type, _folder, _sort, _category, _pinned, _favorite, _attachments),
+                  child: const Text('Apply Filters'),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _sortLabel(String s) {
+    switch (s) {
+      case 'date': return 'Date';
+      case 'title': return 'Title';
+      case 'type': return 'Type';
+      case 'priority': return 'Priority';
+      default: return s;
+    }
   }
 }
 

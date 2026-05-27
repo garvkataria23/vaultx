@@ -47,6 +47,9 @@ class _ChatMessage {
   }) : timestamp = timestamp ?? DateTime.now();
 }
 
+enum _NoteSortBy { relevance, newest, oldest, alphabetical }
+enum _DateFilter { all, today, week, month }
+
 class _SmartVaultScreenState extends State<SmartVaultScreen>
     with TickerProviderStateMixin {
   final _service = SmartVaultService();
@@ -61,6 +64,12 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
   bool _showSuggestions = true;
   String _statusText = '';
 
+  // Filter state
+  Set<NoteType> _typeFilter = {};
+  String? _folderFilter;
+  _NoteSortBy _sortBy = _NoteSortBy.relevance;
+  _DateFilter _dateFilter = _DateFilter.all;
+
   late AnimationController _orbController;
   late AnimationController _pulseController;
   late Animation<double> _orbFloat;
@@ -71,7 +80,50 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
   ItemActionService? _itemActions;
   TrashService? _trash;
 
-  List<String> get _suggestions => _service.getSuggestions(widget.notes);
+  bool get _filtersActive =>
+      _typeFilter.isNotEmpty ||
+      _folderFilter != null ||
+      _sortBy != _NoteSortBy.relevance ||
+      _dateFilter != _DateFilter.all;
+
+  List<String> get _allFolders =>
+      widget.notes.map((n) => n.folder).toSet().toList()..sort();
+
+  List<SecureNote> get _filteredNotes {
+    var notes = widget.notes;
+    if (_typeFilter.isNotEmpty) {
+      notes = notes.where((n) => _typeFilter.contains(n.type)).toList();
+    }
+    if (_folderFilter != null) {
+      notes = notes.where((n) => n.folder == _folderFilter).toList();
+    }
+    final now = DateTime.now();
+    if (_dateFilter == _DateFilter.today) {
+      notes = notes.where((n) =>
+          n.updatedAt.year == now.year &&
+          n.updatedAt.month == now.month &&
+          n.updatedAt.day == now.day).toList();
+    } else if (_dateFilter == _DateFilter.week) {
+      final weekAgo = now.subtract(const Duration(days: 7));
+      notes = notes.where((n) => n.updatedAt.isAfter(weekAgo)).toList();
+    } else if (_dateFilter == _DateFilter.month) {
+      final monthAgo = now.subtract(const Duration(days: 30));
+      notes = notes.where((n) => n.updatedAt.isAfter(monthAgo)).toList();
+    }
+    switch (_sortBy) {
+      case _NoteSortBy.newest:
+        notes = List.from(notes)..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      case _NoteSortBy.oldest:
+        notes = List.from(notes)..sort((a, b) => a.updatedAt.compareTo(b.updatedAt));
+      case _NoteSortBy.alphabetical:
+        notes = List.from(notes)..sort((a, b) => a.title.compareTo(b.title));
+      case _NoteSortBy.relevance:
+        break;
+    }
+    return notes;
+  }
+
+  List<String> get _suggestions => _service.getSuggestions(_filteredNotes);
 
   @override
   void initState() {
@@ -193,7 +245,7 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
         auth: widget.auth,
         vaultKind: widget.vaultKind,
       );
-      var result = await _service.processQuery(trimmed, widget.notes, context: svc);
+      var result = await _service.processQuery(trimmed, _filteredNotes, context: svc);
 
       // Handle navigation intent
       if (result.type == 'navigate') {
@@ -410,6 +462,41 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
     return completer.future;
   }
 
+  void _showFilterSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => _FilterSheet(
+        typeFilter: _typeFilter,
+        folderFilter: _folderFilter,
+        sortBy: _sortBy,
+        dateFilter: _dateFilter,
+        allFolders: _allFolders,
+        onApply: (types, folder, sort, date) {
+          setState(() {
+            _typeFilter = types;
+            _folderFilter = folder;
+            _sortBy = sort;
+            _dateFilter = date;
+          });
+          Navigator.of(ctx).pop();
+        },
+        onReset: () {
+          setState(() {
+            _typeFilter = {};
+            _folderFilter = null;
+            _sortBy = _NoteSortBy.relevance;
+            _dateFilter = _DateFilter.all;
+          });
+          Navigator.of(ctx).pop();
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -436,6 +523,28 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
           ],
         ),
         actions: [
+          Stack(
+            children: [
+              IconButton(
+                icon: const Icon(Icons.filter_list),
+                onPressed: _showFilterSheet,
+                tooltip: 'Filters',
+              ),
+              if (_filtersActive)
+                Positioned(
+                  top: 6,
+                  right: 6,
+                  child: Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      color: cs.primary,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+            ],
+          ),
           if (_messages.isNotEmpty)
             IconButton(
               icon: Icon(
@@ -783,7 +892,13 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
   }
 
   Widget _buildResultNotes(SmartVaultResult result, ColorScheme cs) {
-    final notes = result.notes;
+    var notes = result.notes;
+    if (_typeFilter.isNotEmpty) {
+      notes = notes.where((n) => _typeFilter.contains(n.type)).toList();
+    }
+    if (_folderFilter != null) {
+      notes = notes.where((n) => n.folder == _folderFilter).toList();
+    }
     final showCount = notes.length > 5 ? 5 : notes.length;
 
     return Column(
@@ -1049,6 +1164,212 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
     if (diff.inHours < 24) return '${diff.inHours}h ago';
     if (diff.inDays < 7) return '${diff.inDays}d ago';
     return '${date.month}/${date.day}/${date.year}';
+  }
+}
+
+class _FilterSheet extends StatefulWidget {
+  final Set<NoteType> typeFilter;
+  final String? folderFilter;
+  final _NoteSortBy sortBy;
+  final _DateFilter dateFilter;
+  final List<String> allFolders;
+  final void Function(Set<NoteType>, String?, _NoteSortBy, _DateFilter) onApply;
+  final VoidCallback onReset;
+
+  const _FilterSheet({
+    required this.typeFilter,
+    required this.folderFilter,
+    required this.sortBy,
+    required this.dateFilter,
+    required this.allFolders,
+    required this.onApply,
+    required this.onReset,
+  });
+
+  @override
+  State<_FilterSheet> createState() => _FilterSheetState();
+}
+
+class _FilterSheetState extends State<_FilterSheet> {
+  late Set<NoteType> _types;
+  late String? _folder;
+  late _NoteSortBy _sort;
+  late _DateFilter _date;
+
+  @override
+  void initState() {
+    super.initState();
+    _types = Set.from(widget.typeFilter);
+    _folder = widget.folderFilter;
+    _sort = widget.sortBy;
+    _date = widget.dateFilter;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: SizedBox(
+        height: 500,
+        child: Column(
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 12),
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: cs.onSurface.withValues(alpha: 0.2),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('Filters',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: cs.onSurface,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: widget.onReset,
+                    child: const Text('Reset'),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                children: [
+                  // Note Type
+                  Text('Note Type', style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                    color: cs.onSurface,
+                  )),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: NoteType.values.map((t) {
+                      final selected = _types.contains(t);
+                      return FilterChip(
+                        label: Text(t.name[0].toUpperCase() + t.name.substring(1)),
+                        selected: selected,
+                        onSelected: (val) {
+                          setState(() {
+                            if (val) { _types.add(t); } else { _types.remove(t); }
+                          });
+                        },
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Folder
+                  Text('Folder', style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                    color: cs.onSurface,
+                  )),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<String?>(
+                    value: _folder,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    ),
+                    isExpanded: true,
+                    items: [
+                      const DropdownMenuItem(value: null, child: Text('All folders')),
+                      ...widget.allFolders.map((f) =>
+                        DropdownMenuItem(value: f, child: Text(f))),
+                    ],
+                    onChanged: (v) => setState(() => _folder = v),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Sort
+                  Text('Sort By', style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                    color: cs.onSurface,
+                  )),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    children: _NoteSortBy.values.map((s) {
+                      final selected = _sort == s;
+                      return ChoiceChip(
+                        label: Text(_sortLabel(s)),
+                        selected: selected,
+                        onSelected: (_) => setState(() => _sort = s),
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Date
+                  Text('Date Range', style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                    color: cs.onSurface,
+                  )),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    children: _DateFilter.values.map((d) {
+                      final selected = _date == d;
+                      return ChoiceChip(
+                        label: Text(_dateLabel(d)),
+                        selected: selected,
+                        onSelected: (_) => setState(() => _date = d),
+                      );
+                    }).toList(),
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+              child: SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: () => widget.onApply(_types, _folder, _sort, _date),
+                  child: const Text('Apply Filters'),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _sortLabel(_NoteSortBy s) {
+    switch (s) {
+      case _NoteSortBy.relevance: return 'Relevance';
+      case _NoteSortBy.newest: return 'Newest';
+      case _NoteSortBy.oldest: return 'Oldest';
+      case _NoteSortBy.alphabetical: return 'A-Z';
+    }
+  }
+
+  String _dateLabel(_DateFilter d) {
+    switch (d) {
+      case _DateFilter.all: return 'All Time';
+      case _DateFilter.today: return 'Today';
+      case _DateFilter.week: return 'This Week';
+      case _DateFilter.month: return 'This Month';
+    }
   }
 }
 

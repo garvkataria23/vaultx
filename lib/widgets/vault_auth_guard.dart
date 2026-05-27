@@ -40,7 +40,11 @@ class _VaultAuthGuardState extends State<VaultAuthGuard> with WidgetsBindingObse
   }
 
   void _onSessionChanged() {
-    if (!AuthSessionManager.instance.isAuthenticated && !_autoAuthCancelled) {
+    if (AuthSessionManager.instance.isAuthenticated) {
+      _autoAuthCancelled = false;
+      return;
+    }
+    if (!_autoAuthCancelled) {
       _maybeAutoAuth();
     }
   }

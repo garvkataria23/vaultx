@@ -63,6 +63,7 @@ class NoteViewsRenderer extends StatefulWidget {
     required this.hasMore,
     this.selectedIds = const {},
     this.onSelectionToggle,
+    this.isSelectionMode = false,
     this.blobs,
     this.padding,
   });
@@ -81,6 +82,7 @@ class NoteViewsRenderer extends StatefulWidget {
   final VoidCallback onLoadMore;
   final bool hasMore;
   final Set<String> selectedIds;
+  final bool isSelectionMode;
   final void Function(SecureNote)? onSelectionToggle;
   final EncryptedBlobService? blobs;
   final EdgeInsetsGeometry? padding;
@@ -242,7 +244,7 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
 
   // _buildRecentSection removed as per requirements.
 
-  Widget _buildCard(SecureNote note, {bool isGrid = false, bool isCompact = false, bool isDetailed = false}) {
+  Widget _buildCard(SecureNote note, {bool isGrid = false, bool isCompact = false, bool isDetailed = false, bool isList = false}) {
     final isSelected = widget.selectedIds.contains(note.id);
 
     if (isCompact) {
@@ -257,7 +259,7 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
           leading: isSelected ? Icon(Icons.check_circle, color: cs.primary) : null,
           title: Text(note.title.isEmpty ? 'Untitled' : note.title, maxLines: 1, overflow: TextOverflow.ellipsis),
           trailing: Text(DateFormat.yMd().format(note.updatedAt), style: const TextStyle(fontSize: 10)),
-          onTap: isSelected ? () => widget.onSelectionToggle?.call(note) : () => widget.onTap(note),
+          onTap: (isSelected || widget.isSelectionMode) ? () => widget.onSelectionToggle?.call(note) : () => widget.onTap(note),
           onLongPress: () {
             HapticFeedback.heavyImpact();
             widget.onSelectionToggle?.call(note);
@@ -271,49 +273,192 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
       return Card(
         key: ValueKey('detailed_${note.id}'),
         margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        color: isSelected ? cs.primaryContainer : null,
+        color: Colors.transparent,
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: isSelected ? null : LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                cs.surfaceContainerLow,
+                cs.surfaceContainerHighest.withValues(alpha: 0.6),
+              ],
+            ),
+            color: isSelected ? cs.primaryContainer.withValues(alpha: 0.7) : null,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: isSelected ? cs.primary : cs.outlineVariant.withValues(alpha: 0.4),
+              width: isSelected ? 1.5 : 1,
+            ),
+            boxShadow: [
+              BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 8, offset: const Offset(0, 2)),
+              BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 20, offset: const Offset(0, 8)),
+            ],
+          ),
+          child: InkWell(
+            onTap: (isSelected || widget.isSelectionMode) ? () => widget.onSelectionToggle?.call(note) : () => widget.onTap(note),
+            onLongPress: () {
+              HapticFeedback.heavyImpact();
+              widget.onSelectionToggle?.call(note);
+            },
+            borderRadius: BorderRadius.circular(20),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(child: Text(note.title.isEmpty ? 'Untitled' : note.title, style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: cs.onSurface), maxLines: 1, overflow: TextOverflow.ellipsis)),
+                      if (isSelected) Icon(Icons.check_circle, color: cs.primary, size: 20)
+                      else if (note.pinned) Icon(Icons.push_pin, size: 16, color: cs.primary),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(note.body.isEmpty ? 'No additional text' : note.body, maxLines: 3, overflow: TextOverflow.ellipsis, style: TextStyle(color: cs.onSurfaceVariant, height: 1.4)),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 6,
+                    children: note.tags.map((t) => Chip(
+                      label: Text(t, style: TextStyle(fontSize: 10, color: cs.primary)),
+                      padding: EdgeInsets.zero,
+                      visualDensity: VisualDensity.compact,
+                      backgroundColor: cs.primary.withValues(alpha: 0.1),
+                      side: BorderSide.none,
+                    )).toList(),
+                  ),
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: cs.surfaceContainerHighest.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.access_time, size: 12, color: cs.onSurfaceVariant),
+                            const SizedBox(width: 4),
+                            Text(DateFormat.yMMMd().add_jm().format(note.updatedAt), style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant)),
+                          ],
+                        ),
+                        if (note.attachments.isNotEmpty)
+                          Row(
+                            children: [
+                              const Icon(Icons.attach_file, size: 12),
+                              const SizedBox(width: 4),
+                              Text('${note.attachments.length}', style: const TextStyle(fontSize: 11)),
+                            ],
+                          )
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (isList) {
+      final cs = Theme.of(context).colorScheme;
+      final timeStr = _formatListDate(note.updatedAt);
+      return SwipeActionTile(
+        isPinned: note.pinned,
+        isArchived: note.archived,
+        onAction: (action) {
+          switch (action) {
+            case SwipeAction.pin: widget.onTogglePin(note);
+            case SwipeAction.archive: widget.onToggleArchive(note);
+            case SwipeAction.share: widget.onShare(note);
+            case SwipeAction.move: widget.onMove(note);
+            case SwipeAction.delete: widget.onDelete(note);
+          }
+        },
         child: InkWell(
-          onTap: isSelected ? () => widget.onSelectionToggle?.call(note) : () => widget.onTap(note),
+          onTap: (isSelected || widget.isSelectionMode) ? () => widget.onSelectionToggle?.call(note) : () => widget.onTap(note),
           onLongPress: () {
             HapticFeedback.heavyImpact();
             widget.onSelectionToggle?.call(note);
           },
-          borderRadius: BorderRadius.circular(12),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            decoration: BoxDecoration(
+              color: isSelected ? cs.primaryContainer.withValues(alpha: 0.4) : null,
+              border: Border(
+                bottom: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.2)),
+              ),
+            ),
+            child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Expanded(child: Text(note.title.isEmpty ? 'Untitled' : note.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16), maxLines: 1, overflow: TextOverflow.ellipsis)),
-                    if (isSelected) Icon(Icons.check_circle, color: cs.primary, size: 20)
-                    else if (note.pinned) const Icon(Icons.push_pin, size: 16),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(note.body.isEmpty ? 'No additional text' : note.body, maxLines: 3, overflow: TextOverflow.ellipsis, style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 6,
-                  children: note.tags.map((t) => Chip(label: Text(t, style: const TextStyle(fontSize: 10)), padding: EdgeInsets.zero, visualDensity: VisualDensity.compact)).toList(),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(DateFormat.yMMMd().add_jm().format(note.updatedAt), style: const TextStyle(fontSize: 11)),
-                    if (note.attachments.isNotEmpty)
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                       Row(
                         children: [
-                          const Icon(Icons.attach_file, size: 12),
-                          const SizedBox(width: 4),
-                          Text('${note.attachments.length}', style: const TextStyle(fontSize: 11)),
+                          if (note.pinned && !isSelected)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 6),
+                              child: Icon(Icons.push_pin, size: 13, color: cs.primary),
+                            ),
+                          Expanded(
+                            child: Text(
+                              note.title.isEmpty ? 'Untitled' : note.title,
+                              style: TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 15,
+                                color: isSelected ? cs.onPrimaryContainer : cs.onSurface,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
                         ],
-                      )
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        note.locked ? 'Content Locked' : (note.body.isEmpty ? 'No content' : note.body),
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: isSelected ? cs.onPrimaryContainer.withValues(alpha: 0.6) : cs.onSurfaceVariant.withValues(alpha: 0.7),
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      timeStr,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: isSelected ? cs.onPrimaryContainer.withValues(alpha: 0.5) : cs.onSurfaceVariant.withValues(alpha: 0.5),
+                      ),
+                    ),
+                    if (note.attachments.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Icon(Icons.attach_file, size: 13, color: cs.onSurfaceVariant.withValues(alpha: 0.4)),
+                    ],
                   ],
-                )
+                ),
+                if (isSelected)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 8),
+                    child: Icon(Icons.check_circle, color: cs.primary, size: 20),
+                  ),
               ],
             ),
           ),
@@ -327,6 +472,7 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
       isGrid: isGrid,
       category: widget.categories[note.id],
       isSelected: isSelected,
+      isSelectionMode: widget.isSelectionMode,
       onSelectionToggle: () => widget.onSelectionToggle?.call(note),
       onTap: () => widget.onTap(note),
       onDelete: () => widget.onDelete(note),
@@ -337,6 +483,17 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
       onShare: () => widget.onShare(note),
       onMove: () => widget.onMove(note),
     );
+  }
+
+  String _formatListDate(DateTime date) {
+    final now = DateTime.now();
+    final diff = now.difference(date);
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m';
+    if (diff.inHours < 24) return '${diff.inHours}h';
+    if (diff.inDays == 0) return 'Today';
+    if (diff.inDays == 1) return 'Yesterday';
+    if (diff.inDays < 7) return '${diff.inDays}d';
+    return DateFormat.MMMd().format(date);
   }
 
   Widget _buildGrid() {
@@ -362,8 +519,7 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
       padding: widget.padding ?? EdgeInsets.fromLTRB(12, 12, 12, MediaQuery.of(context).viewPadding.bottom + 80),
       itemCount: widget.notes.length,
       itemBuilder: (context, i) {
-        // In List view, we use isGrid: false so it doesn't try to fill height
-        return _buildCard(widget.notes[i], isGrid: false);
+        return _buildCard(widget.notes[i], isList: true);
       },
     );
   }

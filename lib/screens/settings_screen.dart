@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../models/models.dart';
 import '../services/auth_session_manager.dart';
+import '../services/password_generator.dart';
 import '../services/services.dart';
 import '../services/secure_delete_service.dart';
 import '../theme/custom_theme_creator_screen.dart';
@@ -614,6 +615,7 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
               _notify('Password change unavailable in decoy mode', error: true);
               return;
             }
+            await AuditLog.write('PASSWORD_CHANGE_DIALOG_OPENED');
             final success = await showDialog<bool>(
               context: context,
               barrierDismissible: false,
@@ -621,6 +623,7 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
             );
             
             if (success == true && context.mounted) {
+              await AuditLog.write('PASSWORD_CHANGE_DIALOG_APPROVED — locking session');
               _notify('Password changed successfully');
               AuthSessionManager.instance.lock();
               Navigator.popUntil(context, (route) => route.isFirst);
@@ -927,6 +930,7 @@ class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
   final _confirmCtrl = TextEditingController();
   bool _loading = false;
   String? _error;
+  int _newStrength = 0;
 
   @override
   void dispose() {
@@ -946,7 +950,7 @@ class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
       return;
     }
     if (newPass.length < 6) {
-      setState(() => _error = 'New password must be 6+ characters');
+      setState(() => _error = 'New password must be at least 6 characters');
       return;
     }
     if (newPass != confirm) {
@@ -954,10 +958,15 @@ class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
       return;
     }
     if (current == newPass) {
-      setState(() => _error = 'New password must be different');
+      setState(() => _error = 'New password must be different from current');
+      return;
+    }
+    if (PasswordGenerator.strength(newPass) < 1) {
+      setState(() => _error = 'New password is too weak — add mixed case, digits, or symbols');
       return;
     }
 
+    await AuditLog.write('PASSWORD_CHANGE_SUBMITTED');
     setState(() {
       _loading = true;
       _error = null;
@@ -972,8 +981,10 @@ class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
       if (!mounted) return;
 
       if (success) {
+        await AuditLog.write('PASSWORD_CHANGE_DIALOG_SUCCESS');
         Navigator.of(context).pop(true);
       } else {
+        await AuditLog.write('PASSWORD_CHANGE_DIALOG_FAILED: wrong current password');
         setState(() {
           _loading = false;
           _error = 'Incorrect current password or update failed';
@@ -981,6 +992,7 @@ class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
       }
     } catch (e) {
       if (!mounted) return;
+      await AuditLog.write('PASSWORD_CHANGE_DIALOG_ERROR: $e');
       setState(() {
         _loading = false;
         _error = 'An error occurred during password update';
@@ -990,6 +1002,11 @@ class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final strength = _newCtrl.text.isNotEmpty
+        ? PasswordGenerator.strength(_newCtrl.text)
+        : -1;
+
     return AlertDialog(
       title: const Text('Change Master Password'),
       content: SingleChildScrollView(
@@ -1002,7 +1019,7 @@ class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
                 child: Text(
                   _error!,
                   style: TextStyle(
-                    color: Theme.of(context).colorScheme.error,
+                    color: cs.error,
                     fontSize: 13,
                   ),
                 ),
@@ -1014,16 +1031,43 @@ class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
                 labelText: 'Current Password',
                 helperText: 'Required to verify ownership',
               ),
+              onChanged: (_) => setState(() {}),
             ),
             const SizedBox(height: 12),
             TextField(
               controller: _newCtrl,
               obscureText: true,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: 'New Password',
-                helperText: 'Minimum 6 characters recommended',
+                helperText: 'Minimum 6 characters, mix of cases/digits/symbols recommended',
               ),
+              onChanged: (_) => setState(() => _newStrength = PasswordGenerator.strength(_newCtrl.text)),
             ),
+            if (_newCtrl.text.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: LinearProgressIndicator(
+                        value: (strength + 1) / 5,
+                        minHeight: 4,
+                        backgroundColor: cs.surfaceContainerHighest,
+                        valueColor: AlwaysStoppedAnimation(
+                          strength >= 0 ? PasswordGenerator.strengthColor(strength) : cs.outline,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      strength >= 0 ? PasswordGenerator.strengthLabel(strength) : '',
+                      style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+                    ),
+                  ],
+                ),
+              ),
             const SizedBox(height: 12),
             TextField(
               controller: _confirmCtrl,
@@ -1031,7 +1075,16 @@ class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
               decoration: const InputDecoration(
                 labelText: 'Confirm New Password',
               ),
+              onChanged: (_) => setState(() {}),
             ),
+            if (_confirmCtrl.text.isNotEmpty && _newCtrl.text != _confirmCtrl.text)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  'Passwords do not match',
+                  style: TextStyle(fontSize: 12, color: cs.error),
+                ),
+              ),
             if (_loading)
               const Padding(
                 padding: EdgeInsets.all(16),
