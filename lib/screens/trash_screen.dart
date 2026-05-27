@@ -25,6 +25,9 @@ class _TrashScreenState extends State<TrashScreen> {
   List<TrashItem> _allItems = [];
   List<TrashItem> _filteredItems = [];
   bool _loading = true;
+  bool _authenticated = false;
+  bool _authInProgress = false;
+  bool _bioAvailable = false;
   final Set<String> _selectedIds = {};
   bool _isMultiSelect = false;
   
@@ -37,8 +40,20 @@ class _TrashScreenState extends State<TrashScreen> {
   @override
   void initState() {
     super.initState();
-    _load();
-    AuditLog.write('TRASH OPENED');
+    _checkBio();
+  }
+
+  Future<void> _checkBio() async {
+    final avail = await widget.auth.isBiometricUnlockAvailable();
+    if (mounted) setState(() => _bioAvailable = avail);
+    if (avail && mounted) {
+      final authed = await widget.auth.authenticateBiometric();
+      if (mounted && authed) {
+        setState(() => _authenticated = true);
+        _load();
+        AuditLog.write('TRASH OPENED');
+      }
+    }
   }
 
   Future<void> _load() async {
@@ -128,15 +143,22 @@ class _TrashScreenState extends State<TrashScreen> {
     });
   }
 
-  Future<bool> _authenticate() async {
+  Future<bool> _verifyPassword(String password) async {
+    if (password.isEmpty) return false;
+    if (widget.repo == null) return false;
+    var result = widget.repo!.kind == VaultKind.hidden
+        ? await widget.auth.unlockHidden(password)
+        : await widget.auth.unlockWithPassword(password);
+    result = await widget.auth.verify(result);
+    return result.ok && result.kind == widget.repo!.kind;
+  }
+
+  Future<bool> _authenticateAction() async {
     final bioEnabled = await widget.auth.isBiometricUnlockAvailable();
     if (bioEnabled) {
       if (await widget.auth.authenticateBiometric()) return true;
     }
-    
-    // Password fallback
-    if (widget.repo == null) return false;
-    if (!mounted) return false;
+    if (!mounted || widget.repo == null) return false;
     final ctrl = TextEditingController();
     final secret = await showDialog<String>(
       context: context,
@@ -154,12 +176,7 @@ class _TrashScreenState extends State<TrashScreen> {
       ),
     );
     if (secret == null || secret.isEmpty) return false;
-    if (!mounted) return false;
-    var result = widget.repo!.kind == VaultKind.hidden 
-        ? await widget.auth.unlockHidden(secret) 
-        : await widget.auth.unlockWithPassword(secret);
-    result = await widget.auth.verify(result);
-    return result.ok && result.kind == widget.repo!.kind;
+    return _verifyPassword(secret);
   }
 
   Future<void> _restoreSelected() async {
@@ -167,7 +184,7 @@ class _TrashScreenState extends State<TrashScreen> {
     if (toRestore.isEmpty) return;
 
     bool needsAuth = toRestore.any((i) => i.vaultKind == VaultKind.hidden || i.type == 'password');
-    if (needsAuth && !await _authenticate()) return;
+    if (needsAuth && !await _authenticateAction()) return;
     if (!mounted) return;
 
     final confirmed = await showDialog<bool>(
@@ -231,7 +248,7 @@ class _TrashScreenState extends State<TrashScreen> {
     );
     if (confirm != true) return;
 
-    if (!await _authenticate()) return;
+    if (!await _authenticateAction()) return;
 
     final toDelete = _allItems.where((item) => _selectedIds.contains(item.id)).toList();
     for (final item in toDelete) {
@@ -262,7 +279,7 @@ class _TrashScreenState extends State<TrashScreen> {
     );
     if (confirm != true) return;
 
-    if (!await _authenticate()) return;
+    if (!await _authenticateAction()) return;
 
     await widget.trashService.emptyTrash();
     await _load();
@@ -494,32 +511,154 @@ class _TrashScreenState extends State<TrashScreen> {
           ],
         ],
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _allItems.isEmpty
-              ? _buildEmptyState(cs)
-              : Column(
-                  children: [
-                    _buildStatsBanner(cs),
-                    _buildFilterRow(cs),
-                    if (_isMultiSelect)
-                      SelectionBanner(
-                        selectedCount: _selectedIds.length,
-                        totalCount: _filteredItems.length,
-                        onSelectAll: _selectAll,
-                        onClear: _deselectAll,
-                        itemName: 'items',
-                      ),
-                    Expanded(
-                      child: ListView.builder(
-                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 120),
-                        itemCount: _filteredItems.length,
-                        itemBuilder: (_, i) => _buildTrashCard(_filteredItems[i], cs),
-                      ),
+      body: !_authenticated
+          ? _buildAuthGate(cs)
+          : _loading
+              ? const Center(child: CircularProgressIndicator())
+              : _allItems.isEmpty
+                  ? _buildEmptyState(cs)
+                  : Column(
+                      children: [
+                        _buildStatsBanner(cs),
+                        _buildFilterRow(cs),
+                        if (_isMultiSelect)
+                          SelectionBanner(
+                            selectedCount: _selectedIds.length,
+                            totalCount: _filteredItems.length,
+                            onSelectAll: _selectAll,
+                            onClear: _deselectAll,
+                            itemName: 'items',
+                          ),
+                        Expanded(
+                          child: ListView.builder(
+                            padding: const EdgeInsets.fromLTRB(12, 12, 12, 120),
+                            itemCount: _filteredItems.length,
+                            itemBuilder: (_, i) => _buildTrashCard(_filteredItems[i], cs),
+                          ),
+                        ),
+                      ],
                     ),
+    );
+  }
+
+  Widget _buildAuthGate(ColorScheme cs) {
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.lock_outline, size: 72, color: cs.primary.withValues(alpha: 0.4)),
+            const SizedBox(height: 24),
+            Text(
+              'Authenticate to view Trash',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w600,
+                color: cs.onSurface.withValues(alpha: 0.8),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Verify your identity to browse deleted items.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 14,
+                color: cs.onSurface.withValues(alpha: 0.5),
+              ),
+            ),
+            const SizedBox(height: 32),
+            if (_bioAvailable && !_authInProgress) ...[
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: () async {
+                    final authed = await widget.auth.authenticateBiometric();
+                    if (!mounted) return;
+                    if (authed) {
+                      setState(() => _authenticated = true);
+                      _load();
+                      AuditLog.write('TRASH OPENED');
+                    }
+                  },
+                  icon: const Icon(Icons.fingerprint),
+                  label: const Text('Use biometrics'),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                child: Row(
+                  children: [
+                    Expanded(child: Divider(color: cs.outlineVariant)),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Text('or use password',
+                        style: TextStyle(fontSize: 12, color: cs.onSurface.withValues(alpha: 0.5))),
+                    ),
+                    Expanded(child: Divider(color: cs.outlineVariant)),
                   ],
                 ),
+              ),
+            ],
+            _buildGatePasswordField(cs),
+            const SizedBox(height: 16),
+            TextButton(
+              onPressed: () => Navigator.of(context).maybePop(),
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      ),
     );
+  }
+
+  Widget _buildGatePasswordField(ColorScheme cs) {
+    final ctrl = TextEditingController();
+    return Column(
+      children: [
+        TextField(
+          controller: ctrl,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: 'Master password',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (val) => _gateVerifyPassword(val, ctrl),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            onPressed: _authInProgress ? null : () => _gateVerifyPassword(ctrl.text, ctrl),
+            icon: _authInProgress
+                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.password),
+            label: Text(_authInProgress ? 'Verifying...' : 'Unlock with password'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _gateVerifyPassword(String password, TextEditingController ctrl) async {
+    if (password.isEmpty) return;
+    setState(() => _authInProgress = true);
+    try {
+      final ok = await _verifyPassword(password);
+      if (!mounted) return;
+      if (ok) {
+        ctrl.dispose();
+        setState(() => _authenticated = true);
+        _load();
+        AuditLog.write('TRASH OPENED');
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Invalid password'), behavior: SnackBarBehavior.floating),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _authInProgress = false);
+    }
   }
 
   Widget _buildStatsBanner(ColorScheme cs) {
@@ -699,7 +838,7 @@ class _TrashScreenState extends State<TrashScreen> {
                   onSelected: (v) async {
                     if (v == 'restore') {
                       bool needsAuth = item.vaultKind == VaultKind.hidden || item.type == 'password';
-                      if (needsAuth && !await _authenticate()) return;
+                      if (needsAuth && !await _authenticateAction()) return;
                       await widget.trashService.restore(item);
                       _load();
                       FloatingNotificationService.instance.show('Item restored');
@@ -720,7 +859,7 @@ class _TrashScreenState extends State<TrashScreen> {
                         ),
                       );
                       if (confirm != true) return;
-                      if (!await _authenticate()) return;
+                      if (!await _authenticateAction()) return;
                       await widget.trashService.deleteForever(item);
                       _load();
                       FloatingNotificationService.instance.show('Item permanently deleted');

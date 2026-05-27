@@ -22,6 +22,7 @@ class VaultAuthGuard extends StatefulWidget {
 class _VaultAuthGuardState extends State<VaultAuthGuard> with WidgetsBindingObserver {
   final _auth = VaultAuthService();
   bool _isAuthenticating = false;
+  bool _autoAuthCancelled = false;
 
   @override
   void initState() {
@@ -39,19 +40,20 @@ class _VaultAuthGuardState extends State<VaultAuthGuard> with WidgetsBindingObse
   }
 
   void _onSessionChanged() {
-    if (!AuthSessionManager.instance.isAuthenticated) {
+    if (!AuthSessionManager.instance.isAuthenticated && !_autoAuthCancelled) {
       _maybeAutoAuth();
     }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    if (state == AppLifecycleState.resumed && !_autoAuthCancelled) {
       _maybeAutoAuth();
     }
   }
 
   Future<void> _maybeAutoAuth() async {
+    if (_autoAuthCancelled) return;
     final session = AuthSessionManager.instance;
     if (session.isAuthenticated) {
       session.markActivity();
@@ -118,9 +120,11 @@ class _VaultAuthGuardState extends State<VaultAuthGuard> with WidgetsBindingObse
         session.authenticate(verified);
       } else {
         await AuditLog.write('AUTH_FAILED: ${verified.error}');
+        _autoAuthCancelled = true;
       }
     } catch (e) {
       await AuditLog.write('AUTH_FAILED: $e');
+      _autoAuthCancelled = true;
     } finally {
       if (mounted) setState(() => _isAuthenticating = false);
     }

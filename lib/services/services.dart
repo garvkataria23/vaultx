@@ -54,6 +54,7 @@ export 'backup_manager.dart' show BackupManager;
 export 'link_resolver.dart' show LinkResolver;
 export 'search_index_service.dart' show SearchIndexService;
 export 'note_export_service.dart' show NoteExportService, ExportFormat;
+export 'password_memory_service.dart' show PasswordMemoryService;
 export 'full_export_service.dart' show FullExportService;
 export 'transcription_service.dart' show TranscriptionService;
 export 'share_package_service.dart' show SharePackageService;

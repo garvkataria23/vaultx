@@ -125,6 +125,9 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
   bool _decoyCalculatorEnabled = false;
   bool _decoyCalculatorHistory = true;
   final _decoyCalculatorSecretCtrl = TextEditingController();
+  bool _passwordMemoryEnabled = false;
+  int _passwordMemoryDays = 30;
+  final _passwordMemoryHintCtrl = TextEditingController();
   int _lockMinutes =
       Hive.box('vaultx_settings').get('lockMinutes', defaultValue: 1) as int;
 
@@ -153,6 +156,7 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
     _deadMansEmailCtrl.dispose();
     _deadMansMessageCtrl.dispose();
     _decoyCalculatorSecretCtrl.dispose();
+    _passwordMemoryHintCtrl.dispose();
     super.dispose();
   }
 
@@ -192,6 +196,12 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
           box.get('decoyCalculatorHistory', defaultValue: true) as bool;
       _decoyCalculatorSecretCtrl.text =
           box.get('decoyCalculatorSecret', defaultValue: '0000') as String;
+      _passwordMemoryEnabled =
+          box.get('passwordMemoryEnabled', defaultValue: false) as bool;
+      _passwordMemoryDays =
+          box.get('passwordMemoryFrequencyDays', defaultValue: 30) as int;
+      _passwordMemoryHintCtrl.text =
+          box.get('passwordMemoryHint', defaultValue: '') as String;
     });
   }
 
@@ -382,6 +392,49 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
       });
       _notify('Dead man switch disabled');
     }
+  }
+
+  Future<void> _togglePasswordMemory(bool enable) async {
+    if (enable) {
+      await PasswordMemoryService.saveSettings(
+        enabled: true,
+        frequencyDays: _passwordMemoryDays,
+        hint: _passwordMemoryHintCtrl.text.isNotEmpty
+            ? _passwordMemoryHintCtrl.text
+            : null,
+      );
+      if (!mounted) return;
+      setState(() => _passwordMemoryEnabled = true);
+      _notify('Password memory reminder ON — every ${PasswordMemoryService.dayLabel(_passwordMemoryDays)}');
+    } else {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Disable password memory reminder?'),
+          content: const Text('You will no longer receive periodic reminders to enter your password.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Disable')),
+          ],
+        ),
+      );
+      if (confirm != true) return;
+      await PasswordMemoryService.saveSettings(enabled: false, frequencyDays: _passwordMemoryDays);
+      if (!mounted) return;
+      setState(() => _passwordMemoryEnabled = false);
+      _notify('Password memory reminder disabled');
+    }
+  }
+
+  Future<void> _savePasswordMemoryHint() async {
+    await PasswordMemoryService.saveSettings(
+      enabled: _passwordMemoryEnabled,
+      frequencyDays: _passwordMemoryDays,
+      hint: _passwordMemoryHintCtrl.text.isNotEmpty
+          ? _passwordMemoryHintCtrl.text
+          : null,
+    );
+    _notify('Password hint saved');
   }
 
   Future<int?> _pickDeadMansPeriod() async {
@@ -653,6 +706,59 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
 
         SwitchListTile(value: _timeAccess, onChanged: (v) async { setState(() => _timeAccess = v); await Hive.box('vaultx_settings').put('timeAccess', v); }, title: const Text('Time-based note access')),
         if (_timeAccess) Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: OutlinedButton.icon(onPressed: _pickTimeWindow, icon: const Icon(Icons.access_time), label: Text('Set time window (${_formatTOD(_timeStart)} – ${_formatTOD(_timeEnd)})'))),
+
+        SwitchListTile(
+          value: _passwordMemoryEnabled,
+          onChanged: _togglePasswordMemory,
+          title: const Text('Password memory reminder'),
+          subtitle: _passwordMemoryEnabled
+              ? Text('Remind every ${PasswordMemoryService.dayLabel(_passwordMemoryDays)}')
+              : const Text('Get periodic reminders to enter your password'),
+        ),
+        if (_passwordMemoryEnabled)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Frequency', style: TextStyle(fontSize: 13)),
+                const SizedBox(height: 6),
+                Wrap(spacing: 8, children: [
+                  for (final d in [7, 14, 30, 60, 90])
+                    ChoiceChip(
+                      label: Text(PasswordMemoryService.dayLabel(d)),
+                      selected: _passwordMemoryDays == d,
+                      onSelected: (_) async {
+                        await PasswordMemoryService.saveSettings(
+                          enabled: true,
+                          frequencyDays: d,
+                        );
+                        if (mounted) setState(() => _passwordMemoryDays = d);
+                      },
+                    ),
+                ]),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _passwordMemoryHintCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Password hint (optional)',
+                    hintText: 'e.g. My favorite movie + year',
+                    helperText: 'Stored locally as a memory aid',
+                  ),
+                  maxLines: 2,
+                ),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: FilledButton.tonalIcon(
+                    onPressed: _savePasswordMemoryHint,
+                    icon: const Icon(Icons.save, size: 16),
+                    label: const Text('Save hint'),
+                  ),
+                ),
+              ],
+            ),
+          ),
 
         SwitchListTile(
           value: _deadMansSwitch,

@@ -106,6 +106,8 @@ class _LanguagePickerScreenState extends State<LanguagePickerScreen> {
                   onTap: () async {
                     if (lang['code'] == 'system') {
                       await context.read<LocaleProvider>().setLocale(null);
+                    } else if (lang['code'] == 'zh_TW') {
+                      await context.read<LocaleProvider>().setLocale(const Locale('zh', 'TW'));
                     } else {
                       await context.read<LocaleProvider>().setLocale(Locale(lang['code']!));
                     }

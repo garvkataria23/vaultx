@@ -55,6 +55,9 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
   final _focusNode = FocusNode();
   final List<_ChatMessage> _messages = [];
   bool _isProcessing = false;
+  bool _authenticated = false;
+  bool _authInProgress = false;
+  bool _bioAvailable = false;
   bool _showSuggestions = true;
   String _statusText = '';
 
@@ -73,7 +76,24 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
   @override
   void initState() {
     super.initState();
+    _setupAnimations();
+    _checkBio();
+  }
 
+  Future<void> _checkBio() async {
+    final avail = await widget.auth.isBiometricUnlockAvailable();
+    if (mounted) setState(() => _bioAvailable = avail);
+    if (avail && mounted) {
+      final authed = await widget.auth.authenticateBiometric();
+      if (mounted && authed) {
+        setState(() => _authenticated = true);
+        _initServices();
+        _addWelcomeMessage();
+      }
+    }
+  }
+
+  void _initServices() {
     if (widget.authResult != null && widget.authResult!.masterKey != null) {
       final masterKey = widget.authResult!.masterKey!;
       _drive = DriveService(masterKey, widget.vaultKind);
@@ -94,7 +114,9 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
         );
       }
     }
+  }
 
+  void _setupAnimations() {
     _orbController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 6),
@@ -112,10 +134,6 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
     _orbPulse = Tween<double>(begin: 0.85, end: 1.0).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOutSine),
     );
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _addWelcomeMessage();
-    });
   }
 
   void _addWelcomeMessage() {
@@ -160,7 +178,6 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
     setState(() {
       _messages.add(_ChatMessage(isUser: true, text: trimmed));
       _isProcessing = true;
-      _showSuggestions = false;
       _statusText = 'Thinking...';
     });
     _textController.clear();
@@ -445,36 +462,161 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
             ),
         ],
       ),
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              cs.surface,
-              cs.surface.withValues(alpha: 0.95),
-            ],
-          ),
-        ),
-        child: SafeArea(
-          child: Column(
-            children: [
-              Expanded(
-                child: _messages.isEmpty
-                    ? _buildSuggestionsView(cs)
-                    : _buildMessagesList(cs),
+      body: !_authenticated
+          ? _buildAuthGate(cs)
+          : Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    cs.surface,
+                    cs.surface.withValues(alpha: 0.95),
+                  ],
+                ),
               ),
-              if (_isProcessing) _buildProcessingIndicator(cs),
-              if (_messages.isEmpty && _showSuggestions)
-                _buildSuggestionChips(cs),
-              if (_messages.isNotEmpty && _showSuggestions)
-                _buildMiniSuggestionChips(cs),
-              _buildInputBar(cs),
+              child: SafeArea(
+                child: Column(
+                  children: [
+                    Expanded(child: _buildMessagesList(cs)),
+                    if (_isProcessing) _buildProcessingIndicator(cs),
+                    if (_showSuggestions) _buildSuggestionChips(cs),
+                    _buildInputBar(cs),
+                  ],
+                ),
+              ),
+            ),
+    );
+  }
+
+  Widget _buildAuthGate(ColorScheme cs) {
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.lock_outline, size: 72, color: cs.primary.withValues(alpha: 0.4)),
+            const SizedBox(height: 24),
+            Text(
+              'Authenticate to use Smart AI',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w600,
+                color: cs.onSurface.withValues(alpha: 0.8),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Verify your identity to access AI features.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 14,
+                color: cs.onSurface.withValues(alpha: 0.5),
+              ),
+            ),
+            const SizedBox(height: 32),
+            if (!_authInProgress) _buildBioButton(cs),
+            if (_bioAvailable && !_authInProgress) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                child: Row(
+                  children: [
+                    Expanded(child: Divider(color: cs.outlineVariant)),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Text('or use password',
+                        style: TextStyle(fontSize: 12, color: cs.onSurface.withValues(alpha: 0.5))),
+                    ),
+                    Expanded(child: Divider(color: cs.outlineVariant)),
+                  ],
+                ),
+              ),
             ],
-          ),
+            _buildPasswordField(cs),
+            const SizedBox(height: 16),
+            TextButton(
+              onPressed: () => Navigator.of(context).maybePop(),
+              child: const Text('Cancel'),
+            ),
+          ],
         ),
       ),
     );
+  }
+
+  Widget _buildBioButton(ColorScheme cs) {
+    return SizedBox(
+      width: double.infinity,
+      child: FilledButton.icon(
+        onPressed: () async {
+          final ok = await widget.auth.isBiometricUnlockAvailable();
+          if (!ok || !mounted) return;
+          final authed = await widget.auth.authenticateBiometric();
+          if (!mounted) return;
+          if (authed) {
+            setState(() => _authenticated = true);
+            _initServices();
+            _addWelcomeMessage();
+          }
+        },
+        icon: const Icon(Icons.fingerprint),
+        label: const Text('Use biometrics'),
+      ),
+    );
+  }
+
+  Widget _buildPasswordField(ColorScheme cs) {
+    final ctrl = TextEditingController();
+    return Column(
+      children: [
+        TextField(
+          controller: ctrl,
+          obscureText: true,
+          enabled: !_authInProgress,
+          decoration: InputDecoration(
+            labelText: 'Master password',
+            border: const OutlineInputBorder(),
+          ),
+          onSubmitted: (val) => _verifyPassword(val, ctrl),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            onPressed: _authInProgress ? null : () => _verifyPassword(ctrl.text, ctrl),
+            icon: _authInProgress
+                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.password),
+            label: Text(_authInProgress ? 'Verifying...' : 'Unlock with password'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _verifyPassword(String password, TextEditingController ctrl) async {
+    if (password.isEmpty) return;
+    setState(() => _authInProgress = true);
+    try {
+      var result = widget.vaultKind == VaultKind.hidden
+          ? await widget.auth.unlockHidden(password)
+          : await widget.auth.unlockWithPassword(password);
+      result = await widget.auth.verify(result);
+      if (!mounted) return;
+      if (result.ok && result.kind == widget.vaultKind) {
+        ctrl.dispose();
+        setState(() => _authenticated = true);
+        _initServices();
+        _addWelcomeMessage();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Invalid password'), behavior: SnackBarBehavior.floating),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _authInProgress = false);
+    }
   }
 
   Widget _buildOrb(ColorScheme cs) {
@@ -518,91 +660,7 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
     );
   }
 
-  Widget _buildSuggestionsView(ColorScheme cs) {
-    return CustomScrollView(
-      controller: _scrollController,
-      slivers: [
-        SliverFillRemaining(
-          hasScrollBody: false,
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Spacer(flex: 2),
-              _buildOrbLarge(cs),
-              const SizedBox(height: 24),
-              Text(
-                'Smart Vault AI',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w700,
-                  color: cs.onSurface,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Ask anything about your notes',
-                style: TextStyle(
-                  fontSize: 14,
-                  color: cs.onSurface.withValues(alpha: 0.6),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Fully offline \u2022 100% private',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: cs.primary.withValues(alpha: 0.7),
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              const Spacer(flex: 1),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
 
-  Widget _buildOrbLarge(ColorScheme cs) {
-    return AnimatedBuilder(
-      animation: Listenable.merge([_orbController, _pulseController]),
-      builder: (context, _) {
-        return Transform.translate(
-          offset: Offset(0, _orbFloat.value * 2),
-          child: Transform.scale(
-            scale: _orbPulse.value,
-            child: Container(
-              width: 80,
-              height: 80,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: SweepGradient(
-                  colors: [
-                    cs.primary.withValues(alpha: 0.6),
-                    cs.tertiary.withValues(alpha: 0.6),
-                    cs.secondary.withValues(alpha: 0.6),
-                    cs.primary.withValues(alpha: 0.6),
-                  ],
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: cs.primary.withValues(alpha: 0.2),
-                    blurRadius: 30,
-                    spreadRadius: 5,
-                  ),
-                ],
-              ),
-              child: Icon(
-                Icons.auto_awesome_rounded,
-                size: 36,
-                color: cs.onPrimary,
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
 
   Widget _buildMessagesList(ColorScheme cs) {
     return ListView.builder(
@@ -867,64 +925,31 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
     if (suggestions.isEmpty) return const SizedBox.shrink();
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
       child: SizedBox(
-        height: 36,
+        height: 44,
         child: ListView.separated(
           scrollDirection: Axis.horizontal,
           itemCount: suggestions.length,
           separatorBuilder: (_, _) => const SizedBox(width: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 4),
           itemBuilder: (context, index) {
             return ActionChip(
               label: Text(
                 suggestions[index],
-                style: TextStyle(fontSize: 12, color: cs.primary),
+                style: TextStyle(fontSize: 13, color: cs.primary),
               ),
               onPressed: _isProcessing ? null : () => _sendQuery(suggestions[index]),
               backgroundColor: cs.primary.withValues(alpha: 0.08),
               side: BorderSide.none,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(20),
+                borderRadius: BorderRadius.circular(22),
               ),
+              visualDensity: VisualDensity.standard,
             );
           },
         ),
-      ),
-    );
-  }
-
-  Widget _buildMiniSuggestionChips(ColorScheme cs) {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(16, 2, 16, 4),
-      height: 32,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        children: [
-          ActionChip(
-            label: Text('Suggestions', style: TextStyle(fontSize: 11, color: cs.primary.withValues(alpha: 0.6))),
-            onPressed: null,
-            backgroundColor: Colors.transparent,
-            side: BorderSide.none,
-            padding: EdgeInsets.zero,
-            visualDensity: VisualDensity.compact,
-          ),
-          const SizedBox(width: 6),
-          ...(_suggestions.take(3).map((s) => Padding(
-            padding: const EdgeInsets.only(right: 6),
-            child: ActionChip(
-              label: Text(s, style: TextStyle(fontSize: 11, color: cs.primary)),
-              onPressed: _isProcessing ? null : () => _sendQuery(s),
-              backgroundColor: cs.primary.withValues(alpha: 0.06),
-              side: BorderSide.none,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              visualDensity: VisualDensity.compact,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-              ),
-            ),
-          ))),
-        ],
       ),
     );
   }

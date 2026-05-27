@@ -167,13 +167,12 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
         final appState = context.read<VaultAppState>();
         appState.resetPinAttempts();
         appState.resetBiometricAttempts();
+        PasswordMemoryService.recordPasswordEntry();
         setState(() => _passwordBusy = false);
         _checkForRestoreAfterLogin(result);
         return;
       }
 
-      await AuditLog.write('Failed password unlock attempt');
-      await _handleFailedAttempt();
       if (!mounted) return;
       final notifSetting = Hive.box('vaultx_settings').get('failedAttemptNotifications', defaultValue: 'persistent') as String;
       setState(() {

@@ -111,6 +111,10 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
       Future.microtask(() => BrowserExtensionService.instance.start(_passwordVault!));
     }
     DeadMansService.resetTimer();
+    Future.microtask(() {
+      if (!mounted) return;
+      PasswordMemoryService.checkAndShow(context, widget.auth);
+    });
     _load();
     _restoreListener = () {
       debugPrint('[VaultHome] Restore completed — reloading all data');
