@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:share_plus/share_plus.dart' as share;
+import 'package:share_plus/share_plus.dart';
 
 import '../models/auth.dart';
 import 'audit_log.dart';
@@ -279,9 +279,9 @@ If you do not want this warning, disable the Dead Man Switch in VaultX Settings.
     final message = _box.get(_kMessage) as String?;
 
     try {
-      await share.SharePlus.instance.share(
-        share.ShareParams(
-          files: [share.XFile(filePath)],
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(filePath)],
           subject: 'VaultX Encrypted Backup',
           text: email != null
               ? 'Encrypted VaultX backup for $email'

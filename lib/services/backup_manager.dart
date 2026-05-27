@@ -315,11 +315,11 @@ class BackupManager extends ChangeNotifier {
           
           final manifest = result.manifest;
           final counts = manifest.counts;
-          capturedFileCount = (counts['mainNoteCount'] as int? ?? 0) +
-              (counts['hiddenNoteCount'] as int? ?? 0) +
-              (counts['driveFileCount'] as int? ?? 0) +
-              (counts['attachmentBlobCount'] as int? ?? 0) +
-              (counts['passwordEntryCount'] as int? ?? 0);
+          capturedFileCount = (counts['mainNoteCount'] ?? 0) +
+              (counts['hiddenNoteCount'] ?? 0) +
+              (counts['driveFileCount'] ?? 0) +
+              (counts['attachmentBlobCount'] ?? 0) +
+              (counts['passwordEntryCount'] ?? 0);
           debugPrint('BACKUP_MANAGER: Collected items for $type:');
           debugPrint(' - Main Notes: ${counts['mainNoteCount'] ?? 0}');
           debugPrint(' - Hidden Notes: ${counts['hiddenNoteCount'] ?? 0}');

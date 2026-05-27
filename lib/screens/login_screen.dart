@@ -9,7 +9,8 @@ import '../models/models.dart';
 import '../services/services.dart';
 import '../widgets/widgets.dart';
 import 'restore_screen.dart';
-import 'vault_home.dart';
+import 'recovery_screen.dart';
+import '../services/auth_session_manager.dart';
 
 /// Login screen — password and biometric unlock.
 class LoginScreen extends StatefulWidget {
@@ -38,7 +39,7 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _checkBiometric(autoPrompt: true);
+    _checkBiometric(autoPrompt: false);
   }
 
   @override
@@ -51,27 +52,36 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Redundant: VaultAuthGuard handles auto-auth on resume.
+    // We only update availability info here.
     if (state == AppLifecycleState.resumed) {
-      _checkBiometric(autoPrompt: true);
+      _checkBiometric(autoPrompt: false);
     }
   }
 
   Future<void> _checkBiometric({bool autoPrompt = false}) async {
-    final available = await widget.auth.isBiometricUnlockAvailable();
+    final available = await widget.auth.isBiometricUnlockAvailable().timeout(
+      const Duration(seconds: 5),
+      onTimeout: () {
+        debugPrint('AUTH_TIMEOUT: isBiometricUnlockAvailable in _checkBiometric');
+        return false;
+      },
+    );
     if (!mounted) return;
 
     if (available) {
       final label = await widget.auth.biometricTypeLabel();
+      if (!mounted) return;
       final icon = await widget.auth.biometricTypeIcon();
-      if (mounted) {
-        setState(() {
-          _biometricAvailable = true;
-          _biometricLabel = label;
-          _biometricIcon = icon;
-        });
-      }
+      if (!mounted) return;
+      
+      setState(() {
+        _biometricAvailable = true;
+        _biometricLabel = label;
+        _biometricIcon = icon;
+      });
     } else {
-      setState(() => _biometricAvailable = false);
+      if (mounted) setState(() => _biometricAvailable = false);
     }
 
     if (autoPrompt && _biometricAvailable && !_biometricBusy && _mode == _VaultMode.main) {
@@ -88,33 +98,49 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
 
   Future<void> _unlockWithBiometric() async {
     if (_biometricBusy) return;
-    setState(() {
-      _biometricBusy = true;
-      _error = null;
-    });
-
-    AuthResult result = await widget.auth.unlockWithBiometric();
-    result = await widget.auth.verify(result);
-
-    if (!mounted) return;
-
-    if (result.ok) {
-      context.read<VaultAppState>().resetBiometricAttempts();
-      _navigateHome(result);
-      return;
+    if (mounted) {
+      setState(() {
+        _biometricBusy = true;
+        _error = null;
+      });
     }
 
-    if (result.error != null && !result.error!.contains('cancelled')) {
-      await context.read<VaultAppState>().recordFailedBiometricAttempt();
-    }
+    try {
+      AuthResult result = await widget.auth.unlockWithBiometric();
+      if (!mounted) return;
+      result = await widget.auth.verify(result);
 
-    setState(() {
-      _biometricBusy = false;
-      _error = result.error;
-    });
+      if (!mounted) return;
+
+      if (result.ok) {
+        context.read<VaultAppState>().resetBiometricAttempts();
+        _navigateHome(result);
+        return;
+      }
+
+      if (result.error != null && !result.error!.contains('cancelled')) {
+        await context.read<VaultAppState>().recordFailedBiometricAttempt();
+      }
+
+      if (mounted) {
+        setState(() {
+          _biometricBusy = false;
+          _error = result.error;
+        });
+      }
+    } catch (e) {
+      debugPrint('BIOMETRIC_ERROR: $e');
+      if (mounted) {
+        setState(() {
+          _biometricBusy = false;
+          _error = 'Biometric authentication failed. Try again.';
+        });
+      }
+    }
   }
 
   Future<void> _unlockWithPassword() async {
+    if (_passwordBusy) return;
     if (_secret.text.isEmpty) {
       setState(() => _error = 'Enter your password.');
       return;
@@ -124,45 +150,56 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
       _error = null;
     });
 
-    AuthResult result;
-    switch (_mode) {
-      case _VaultMode.main:
-        result = await widget.auth.unlockWithPassword(_secret.text);
-      case _VaultMode.hidden:
-        result = await widget.auth.unlockHidden(_secret.text);
+    try {
+      AuthResult result;
+      switch (_mode) {
+        case _VaultMode.main:
+          result = await widget.auth.unlockWithPassword(_secret.text);
+        case _VaultMode.hidden:
+          result = await widget.auth.unlockHidden(_secret.text);
+      }
+
+      result = await widget.auth.verify(result);
+
+      if (!mounted) return;
+
+      if (result.ok) {
+        final appState = context.read<VaultAppState>();
+        appState.resetPinAttempts();
+        appState.resetBiometricAttempts();
+        setState(() => _passwordBusy = false);
+        _checkForRestoreAfterLogin(result);
+        return;
+      }
+
+      await AuditLog.write('Failed password unlock attempt');
+      await _handleFailedAttempt();
+      if (!mounted) return;
+      final notifSetting = Hive.box('vaultx_settings').get('failedAttemptNotifications', defaultValue: 'persistent') as String;
+      setState(() {
+        _passwordBusy = false;
+        _error = result.error ?? 'Invalid password';
+      });
+      final mode = switch (notifSetting) {
+        'off' => FloatingNotificationMode.off,
+        'persistent' => FloatingNotificationMode.persistent,
+        _ => FloatingNotificationMode.floating,
+      };
+      FloatingNotificationService.instance.show(
+        result.error ?? 'Invalid password',
+        error: true,
+        mode: mode,
+        duration: notifSetting == 'persistent' ? const Duration(minutes: 15) : const Duration(seconds: 4),
+      );
+    } catch (e) {
+      debugPrint('LOGIN_ERROR: $e');
+      if (mounted) {
+        setState(() {
+          _passwordBusy = false;
+          _error = 'Unexpected error. Please try again.';
+        });
+      }
     }
-
-    result = await widget.auth.verify(result);
-
-    if (!mounted) return;
-
-    if (result.ok) {
-      final appState = context.read<VaultAppState>();
-      appState.resetPinAttempts();
-      appState.resetBiometricAttempts();
-      _checkForRestoreAfterLogin(result);
-      return;
-    }
-
-    await AuditLog.write('Failed password unlock attempt');
-    await _handleFailedAttempt();
-    if (!mounted) return;
-    final notifSetting = Hive.box('vaultx_settings').get('failedAttemptNotifications', defaultValue: 'persistent') as String;
-    setState(() {
-      _passwordBusy = false;
-      _error = null;
-    });
-    final mode = switch (notifSetting) {
-      'off' => FloatingNotificationMode.off,
-      'persistent' => FloatingNotificationMode.persistent,
-      _ => FloatingNotificationMode.floating,
-    };
-    FloatingNotificationService.instance.show(
-      result.error ?? 'Invalid password',
-      error: true,
-      mode: mode,
-      duration: notifSetting == 'persistent' ? const Duration(minutes: 15) : const Duration(seconds: 4),
-    );
   }
 
   Future<void> _checkForRestoreAfterLogin(AuthResult result) async {
@@ -285,17 +322,131 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
   }
 
   void _navigateHome(AuthResult result) {
-    DeadMansService.resetTimer();
-    if (!mounted) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && result.ok) {
-        Navigator.of(context).pushReplacement(
+    try {
+      DeadMansService.resetTimer();
+    } catch (_) {
+      // resetTimer is fire-and-forget; ignore failures so authenticate always runs
+    }
+    AuthSessionManager.instance.authenticate(result);
+  }
+
+  void _showForgotPasswordOptions() {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Center(
+                child: Container(
+                  width: 40, height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: Theme.of(ctx).colorScheme.onSurfaceVariant.withValues(alpha: 0.3),
+                    borderRadius: BorderRadius.circular(99),
+                  ),
+                ),
+              ),
+              Text(
+                'Reset vault access',
+                style: Theme.of(ctx).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Choose how you\'d like to regain access to your vault.',
+                style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 20),
+              if (_biometricAvailable) ...[
+                ListTile(
+                  leading: Icon(_biometricIcon, color: Theme.of(ctx).colorScheme.primary),
+                  title: const Text('Use biometrics'),
+                  subtitle: const Text('Verify identity to reset your password'),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _resetWithBiometric();
+                  },
+                ),
+                const Divider(height: 1),
+              ],
+              ListTile(
+                leading: const Icon(Icons.vpn_key_outlined),
+                title: const Text('Use recovery code'),
+                subtitle: const Text('Enter one of your recovery codes'),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _openRecoveryScreen();
+                },
+              ),
+              const SizedBox(height: 8),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _resetWithBiometric() async {
+    if (_biometricBusy) return;
+    setState(() {
+      _biometricBusy = true;
+      _error = null;
+    });
+
+    try {
+      AuthResult result = await widget.auth.unlockWithBiometric();
+      if (!mounted) return;
+      result = await widget.auth.verify(result);
+
+      if (!mounted) return;
+
+      if (result.ok && result.masterKey != null) {
+        setState(() => _biometricBusy = false);
+        Navigator.of(context).push(
           MaterialPageRoute(
-            builder: (_) => VaultHome(auth: widget.auth, authResult: result),
+            builder: (_) => RecoveryScreen(
+              auth: widget.auth,
+              preVerifiedMasterKey: result.masterKey,
+            ),
           ),
         );
+        return;
       }
-    });
+
+      if (mounted) {
+        setState(() {
+          _biometricBusy = false;
+          _error = result.error;
+        });
+      }
+    } catch (e) {
+      debugPrint('RESET_BIOMETRIC_ERROR: $e');
+      if (mounted) {
+        setState(() {
+          _biometricBusy = false;
+          _error = 'Biometric authentication failed. Try again.';
+        });
+      }
+    }
+  }
+
+  void _openRecoveryScreen() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => RecoveryScreen(auth: widget.auth),
+      ),
+    );
   }
 
   @override
@@ -317,7 +468,7 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
                   Icon(Icons.lock_outline, size: 56, color: cs.primary),
                   const SizedBox(height: 16),
                   Text(
-                    _mode == _VaultMode.hidden ? 'Hidden Vault' : 'VaultX',
+                    _mode == _VaultMode.hidden ? 'Hidden Vault' : 'Notex',
                     style: Theme.of(context).textTheme.displaySmall,
                   ),
                   const SizedBox(height: 12),
@@ -425,6 +576,18 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
                     },
                     child: Text(_mode == _VaultMode.hidden ? 'Return to main vault' : 'Open hidden vault'),
                   ),
+
+                  if (_mode == _VaultMode.main) ...[
+                    const SizedBox(height: 4),
+                    TextButton(
+                      onPressed: _showForgotPasswordOptions,
+                      style: TextButton.styleFrom(foregroundColor: cs.onSurfaceVariant),
+                      child: Text(
+                        'Forgot password?',
+                        style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant.withValues(alpha: 0.6)),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),

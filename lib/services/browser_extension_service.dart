@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 
 import 'password_vault_service.dart';
 import 'audit_log.dart';
+import 'auth_session_manager.dart';
 
 class BrowserExtensionService {
   static final BrowserExtensionService instance = BrowserExtensionService._();
@@ -91,6 +92,13 @@ class BrowserExtensionService {
         else if (type == 'get_credentials') {
           if (!isAuthorized) return;
           if (msg['token'] != _sessionToken) return;
+
+          // CRITICAL: Verify global app lock state
+          if (!AuthSessionManager.instance.isAuthenticated) {
+            webSocket.add(jsonEncode({'type': 'vault_locked'}));
+            await AuditLog.write('Autofill BLOCKED: Vault is locked');
+            return;
+          }
 
           final domain = msg['domain'] as String?;
           if (domain == null || _passwordService == null) return;

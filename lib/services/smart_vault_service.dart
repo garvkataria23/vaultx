@@ -1,9 +1,18 @@
 import 'dart:math';
 import 'dart:collection';
 
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:uuid/uuid.dart';
+
 import '../models/models.dart';
 import 'note_analyzer.dart';
 import 'summarization_service.dart';
+import 'password_vault_service.dart';
+import 'drive_service.dart';
+import 'trash_service.dart';
+import 'item_action_service.dart';
+import 'auth_service.dart';
+import 'vault_repository.dart';
 
 class SmartVaultResult {
   final String type;
@@ -20,6 +29,28 @@ class SmartVaultResult {
     this.notes = const [],
     this.relevance = 1.0,
     this.summary,
+  });
+}
+
+/// Context object passed to [SmartVaultService.processQuery] when the
+/// query may need access to vault services (state queries, actions, etc.).
+class SmartVaultContext {
+  final VaultRepository? repo;
+  final PasswordVaultService? passwords;
+  final DriveService? drive;
+  final TrashService? trash;
+  final ItemActionService? itemActions;
+  final VaultAuthService? auth;
+  final VaultKind vaultKind;
+
+  const SmartVaultContext({
+    this.repo,
+    this.passwords,
+    this.drive,
+    this.trash,
+    this.itemActions,
+    this.auth,
+    this.vaultKind = VaultKind.main,
   });
 }
 
@@ -62,31 +93,707 @@ class SmartVaultService {
     };
   }
 
+  final String appVersion = '2.0.0';
+
+  // ── Knowledge Base ─────────────────────────────────────────────────────
+  static const List<Map<String, dynamic>> _knowledgeBase = [
+    {
+      'triggers': ['what is vaultx', 'about vaultx', 'tell me about vaultx', 'what does vaultx do', 'what is this app'],
+      'answer': 'VaultX is a fully encrypted, offline-first vault app for storing notes, passwords, and files. Everything is encrypted with AES-256-GCM before it ever touches disk, and all AI processing happens on-device — your data never leaves this device.',
+    },
+    {
+      'triggers': ['who made vaultx', 'who created vaultx', 'who built vaultx', 'developer', 'creator'],
+      'answer': 'VaultX was created by a team focused on privacy-first digital security. The app is built with Flutter and Dart.',
+    },
+    {
+      'triggers': ['what version', 'app version', 'current version', 'which version', 'version number'],
+      'answer': 'You\'re running VaultX version {{version}}. All features run fully offline with no external dependencies.',
+    },
+    {
+      'triggers': ['how to backup', 'how do i backup', 'backup my data', 'how to restore', 'how do i restore'],
+      'answer': 'You can back up your vault from Settings > Backup & Restore. VaultX supports Google Drive and MEGA cloud backups, as well as ZIP archive export (.vxbackup format). To restore, go to the same section and choose a backup source.',
+    },
+    {
+      'triggers': ['what is dead man', 'dead man switch', 'what is dead man switch', 'how does dead man work'],
+      'answer': 'The Dead Man\'s Switch is a security feature that automatically wipes your vault if you don\'t check in within a set time. Configure it in Settings > Security Center. If enabled, you must enter your password periodically to reset the timer — failure to do so triggers an automatic vault wipe.',
+    },
+    {
+      'triggers': ['how to change password', 'change master password', 'change my password', 'how do i change password'],
+      'answer': 'Go to Settings > Security Center > Change Master Password. You\'ll need your current password to authorize the change. After changing, all future unlocks will use the new password.',
+    },
+    {
+      'triggers': ['what is hidden vault', 'hidden vault', 'decoy mode', 'decoy calculator', 'what is decoy mode'],
+      'answer': 'Hidden Vault (Decoy Mode) lets you create a separate, plausible-looking vault that opens with a different PIN. In Settings you can configure a fake calculator app as the entry point — entering your secret PIN reveals the real vault, while a wrong PIN shows the decoy vault with fake data.',
+    },
+    {
+      'triggers': ['what is biometric', 'fingerprint unlock', 'face unlock', 'biometric unlock', 'how to enable biometric'],
+      'answer': 'Biometric unlock lets you use your device\'s fingerprint or face recognition to unlock the vault. Enable it in Settings > Security Center > Biometric Unlock. VaultX uses platform-native biometric APIs (Android Keystore / iOS Secure Enclave).',
+    },
+    {
+      'triggers': ['how to export', 'export notes', 'export data', 'how do i export'],
+      'answer': 'You can export your vault data as a ZIP archive from Settings > Backup & Restore > Export as ZIP. This creates a .vxbackup file that can be transferred and imported on another device.',
+    },
+    {
+      'triggers': ['what is capture', 'intruder selfie', 'intruder capture', 'failed attempt photo', 'what is intruder selfie'],
+      'answer': 'The Intruder Selfie feature captures a photo using the front camera whenever someone enters the wrong password. You can view captured images in Security Logs. Enable it in Settings > Security Center > Intruder Selfie Capture.',
+    },
+    {
+      'triggers': ['what features', 'feature list', 'what can vaultx do', 'all features', 'capabilities'],
+      'answer': 'VaultX has many features:\n• Encrypted notes (text, checklist, voice, drawing)\n• Password manager with strong password generator\n• Encrypted file manager (Drive) with compression tools\n• Cloud backup (Google Drive, MEGA)\n• Smart AI assistant for offline note querying\n• Smart View & Categories for auto-organized notes\n• Security features: biometric unlock, hidden vault, dead man\'s switch, intruder selfie capture, time-based access\n• Trash with auto-cleanup\n• OCR text extraction from images\n• Voice transcription (Vosk, on-device)\n• Browser extension pairing for password autofill',
+    },
+    {
+      'triggers': ['how to use ai', 'what can ai do', 'what can you do', 'help', 'what can i ask'],
+      'answer': 'You can ask me about your notes (find, summarize, related notes), navigate to any screen (settings, drive, trash, etc.), check vault statistics (note count, storage, backup status), create notes, manage passwords, and learn about VaultX features. Try: "find my cricket notes", "how many notes do I have", "show me my recent notes", "create a note called Groceries", "open settings", "what is dead man switch".',
+    },
+    {
+      'triggers': ['is my data safe', 'is vaultx secure', 'encryption', 'how secure', 'privacy'],
+      'answer': 'Yes, your data is protected with AES-256-GCM encryption. Your master key never leaves your device. All AI processing is done on-device — no data is sent to cloud servers. The app uses platform security features (Android Keystore, iOS Secure Enclave) for biometric authentication.',
+    },
+    {
+      'triggers': ['time access', 'time based access', 'schedule access', 'restrict access time'],
+      'answer': 'Time-Based Access lets you restrict when the vault can be unlocked. Configure it in Settings > Security Center > Time-Based Access. You can set allowed unlock windows (e.g., 8 AM - 10 PM) — the vault cannot be unlocked outside these hours.',
+    },
+    {
+      'triggers': ['auto lock', 'auto lock timeout', 'lock after', 'session timeout', 'auto lock timer'],
+      'answer': 'You can configure auto-lock timeout in Settings. The vault will automatically lock after a period of inactivity. You can also manually lock at any time from the home screen.',
+    },
+  ];
+
+  // ── Intent Patterns (ordered by priority) ──────────────────────────────
   final List<Map<String, String>> _intentPatterns = [
-    {'pattern': r'(?i)^(summarize|summary|summarise|gist|tl;dr|tl dr)\s+', 'intent': 'summarize'},
-    {'pattern': r'(?i)(duplicate|duplicates|duplicated|find\s+(same|similar|copy))', 'intent': 'duplicates'},
-    {'pattern': r'(?i)(related|similar|like|same\s+as)', 'intent': 'related'},
-    {'pattern': r'(?i)(pin|memory|remember|prioritize|prioritise)', 'intent': 'memory'},
-    {'pattern': r'(?i)(tag|label|categorize|categorise|suggest\s+tags)', 'intent': 'tags'},
-    {'pattern': r'(?i)(hidden\s+connection|find\s+connection|relate|link\s+note)', 'intent': 'connections'},
-    {'pattern': r'(?i)(image|screenshot|picture|photo|media)', 'intent': 'media'},
-    {'pattern': r'(?i)(voice|audio|recording|recorded)', 'intent': 'voice'},
-    {'pattern': r'(?i)(insight|insights|most\s+worked|trending|popular)', 'intent': 'insights'},
-    {'pattern': r'(?i)(folder|group|organize|organise|auto\s*folder|smart\s*folder)', 'intent': 'folders'},
-    {'pattern': r'(?i)(today|what\s+did\s+I\s+work|recent|latest|what\s+worked)', 'intent': 'recent'},
-    {'pattern': r'(?i)(from|since|last|past|this|previous)\s+(week|month|year|day|today|yesterday)', 'intent': 'timeline'},
-    {'pattern': r'(?i)(ask|tell|what|who|when|where|why|how|did|does|is|are)\s+', 'intent': 'ask'},
-    {'pattern': r'(?i)(find|show|get|search|display|list)\s+.*(note|notes)', 'intent': 'search'},
-    {'pattern': r'(?i)(open|go\s+to|navigate\s+to)\s+(home|drive|security|settings|game)', 'intent': 'navigate'},
+    // Knowledge & help queries (high priority)
+    {'pattern': r'^(what is|what are|what does|who|how do|how to|tell me about|explain|about |help|feature|capa)', 'intent': 'knowledge'},
+    // App state queries
+    {'pattern': r'(how many|count|total|number of|note count|password count)', 'intent': 'stats'},
+    {'pattern': r'(backup.*(status|when|date|last|history)|when.*(backup|last)|last.*backup)', 'intent': 'backup_status'},
+    {'pattern': r'(storage|drive.*(usage|space|size|used|free))', 'intent': 'storage_status'},
+    {'pattern': r'(trash.*(count|items|size)|how many.*trash)', 'intent': 'trash_status'},
+    {'pattern': r'(security.*(status|enabled|on|off)|is.*(biometric|dead|intruder|time)|status.*(security|lock))', 'intent': 'security_status'},
+    // Note CRUD
+    {'pattern': r'^(create|make|write|new)\s+(a\s+)?note', 'intent': 'create_note'},
+    {'pattern': r'(delete|remove|trash)\s+.*(note|notes)', 'intent': 'delete_note'},
+    {'pattern': r'archive\s+.*(note|notes)', 'intent': 'archive_note'},
+    {'pattern': r'pin\s+.*(note|notes)', 'intent': 'pin_note'},
+    // Password queries
+    {'pattern': r'(password|passwords|credential).*(for|of|show|find|get|search)', 'intent': 'password_query'},
+    {'pattern': r'(generate|create|make|new)\s+(a\s+)?(strong\s+)?(password|pass|key)', 'intent': 'generate_password'},
+    // App actions
+    {'pattern': r'(empty|clear)\s+(the\s+)?trash', 'intent': 'empty_trash'},
+    {'pattern': r'(lock|secure|close)\s+(the\s+)?(vault|app)', 'intent': 'lock_vault'},
+    {'pattern': r'^(trigger|run|start)\s+(a\s+)?(backup|export)', 'intent': 'trigger_backup'},
+    // Existing patterns
+    {'pattern': r'^(summarize|summary|summarise|gist|tl;dr|tl dr)\s+', 'intent': 'summarize'},
+    {'pattern': r'(duplicate|duplicates|duplicated|find\s+(same|similar|copy))', 'intent': 'duplicates'},
+    {'pattern': r'(related|similar|like|same\s+as)', 'intent': 'related'},
+    {'pattern': r'(pin|memory|remember|prioritize|prioritise)', 'intent': 'memory'},
+    {'pattern': r'(tag|label|categorize|categorise|suggest\s+tags)', 'intent': 'tags'},
+    {'pattern': r'(hidden\s+connection|find\s+connection|relate|link\s+note)', 'intent': 'connections'},
+    {'pattern': r'(image|screenshot|picture|photo|media)', 'intent': 'media'},
+    {'pattern': r'(voice|audio|recording|recorded)', 'intent': 'voice'},
+    {'pattern': r'(insight|insights|most\s+worked|trending|popular)', 'intent': 'insights'},
+    {'pattern': r'(folder|group|organize|organise|auto\s*folder|smart\s*folder)', 'intent': 'folders'},
+    {'pattern': r'(today|what\s+did\s+I\s+work|recent|latest|what\s+worked)', 'intent': 'recent'},
+    {'pattern': r'(from|since|last|past|this|previous)\s+(week|month|year|day|today|yesterday)', 'intent': 'timeline'},
+    {'pattern': r'(ask|tell|what|who|when|where|why|how|did|does|is|are)\s+', 'intent': 'ask'},
+    {'pattern': r'(find|show|get|search|display|list)\s+.*(note|notes)', 'intent': 'search'},
+    {'pattern': r'(open|go\s+to|navigate\s+to|take\s+me\s+to|show\s+me)\s+(the\s+)?(home|drive|security|settings|game|backup|trash|archive|password)', 'intent': 'navigate'},
+    {'pattern': r'(backup|restore)\s+(my\s+)?(data|notes|vault|settings)', 'intent': 'navigate'},
   ];
 
   String _detectIntent(String query) {
     for (final entry in _intentPatterns) {
-      if (RegExp(entry['pattern']!).hasMatch(query)) {
+      if (RegExp(entry['pattern']!, caseSensitive: false).hasMatch(query)) {
         return entry['intent']!;
       }
     }
     return 'search';
+  }
+
+  // ── Knowledge Base Lookup ─────────────────────────────────────────────
+  String? _answerKnowledgeQuery(String query) {
+    final lower = query.toLowerCase().trim();
+    for (final entry in _knowledgeBase) {
+      for (final trigger in entry['triggers'] as List<String>) {
+        if (lower.contains(trigger)) {
+          var answer = entry['answer'] as String;
+          answer = answer.replaceAll('{{version}}', appVersion);
+          return answer;
+        }
+      }
+    }
+    return null;
+  }
+
+  String _extractTitleFromCreateQuery(String query) {
+    final patterns = [
+      RegExp(r'(?:called|named|title[:\s]+|titled)\s+(.+?)(?:\s+with\s+content|\.|$)', caseSensitive: false),
+      RegExp(r'create\s+(?:a\s+)?note\s+(?:called|named|titled\s+)?(.+?)(?:\s+with\s+|\s+about\s+|\.|$)', caseSensitive: false),
+      RegExp(r'write\s+(?:a\s+)?note\s+(?:about|on|called|named|titled\s+)?(.+?)(?:\s+with\s+|\s+about\s+|\.|$)', caseSensitive: false),
+      RegExp(r'new\s+note\s+(?:called|named|titled\s+)?(.+?)(?:\s+with\s+|\s+about\s+|\.|$)', caseSensitive: false),
+    ];
+    for (final p in patterns) {
+      final match = p.firstMatch(query);
+      if (match != null) {
+        final title = match.group(1)!.trim();
+        if (title.isNotEmpty && title.length < 100) return title;
+      }
+    }
+    final words = query.split(RegExp(r'\s+'));
+    final known = {'create', 'make', 'write', 'new', 'a', 'note', 'called', 'named', 'titled', 'with', 'content', 'about', 'for'};
+    final titleWords = words.where((w) => !known.contains(w.toLowerCase())).toList();
+    return titleWords.take(5).join(' ');
+  }
+
+  String _extractBodyFromCreateQuery(String query) {
+    final patterns = [
+      RegExp(r'(?:with\s+content|content[:\s]+|body[:\s]+)(.+?)$', caseSensitive: false),
+      RegExp(r'(?:about|saying)[:\s]+(.+?)$', caseSensitive: false),
+    ];
+    for (final p in patterns) {
+      final match = p.firstMatch(query);
+      if (match != null) {
+        final body = match.group(1)!.trim();
+        if (body.isNotEmpty) return body;
+      }
+    }
+    return '';
+  }
+
+  String _extractFolderFromQuery(String query) {
+    final lower = query.toLowerCase();
+    final folderKeywords = <String, String>{
+      'finance': 'Finance', 'work': 'Work', 'personal': 'Personal',
+      'tech': 'Tech', 'health': 'Health', 'education': 'Education',
+      'shopping': 'Shopping', 'travel': 'Travel',
+    };
+    for (final entry in folderKeywords.entries) {
+      final regex = RegExp(r'\b' + entry.key + r'\b', caseSensitive: false);
+      if (regex.hasMatch(lower)) return entry.value;
+    }
+    final match = RegExp(r'folder\s+(.+?)(?:\s|$)', caseSensitive: false).firstMatch(lower);
+    if (match != null) {
+      final folderName = match.group(1)!.trim();
+      if (folderName.isNotEmpty) return folderName[0].toUpperCase() + folderName.substring(1);
+    }
+    return 'General';
+  }
+
+  // ── New Intent Handlers ──────────────────────────────────────────────
+
+  Future<SmartVaultResult> _handleKnowledge(String query) async {
+    final answer = _answerKnowledgeQuery(query);
+    if (answer != null) {
+      return SmartVaultResult(
+        type: 'knowledge',
+        title: 'Knowledge',
+        subtitle: answer,
+      );
+    }
+    // Fallback: check if it's asking about app features
+    if (query.toLowerCase().contains('feature') || query.toLowerCase().contains('what can')) {
+      final features = _knowledgeBase.firstWhere(
+        (e) => (e['triggers'] as List).contains('what features'),
+        orElse: () => _knowledgeBase[0],
+      );
+      return SmartVaultResult(
+        type: 'knowledge',
+        title: 'VaultX Features',
+        subtitle: (features['answer'] as String).replaceAll('{{version}}', appVersion),
+      );
+    }
+    return const SmartVaultResult(
+      type: 'empty',
+      title: 'I don\'t have an answer for that',
+      subtitle: 'Try asking about features, security, backup, or how-to topics. Say "help" or "what can you do" for inspiration.',
+    );
+  }
+
+  Future<SmartVaultResult> _handleStats(String query, List<SecureNote> notes, SmartVaultContext? ctx) async {
+    final activeNotes = notes.where((n) => !n.archived && !n.deleted).toList();
+    final lower = query.toLowerCase();
+
+    // Count specific types
+    if (lower.contains('image') || lower.contains('picture') || lower.contains('screenshot') || lower.contains('media')) {
+      final count = activeNotes.where((n) => n.attachments.any((a) => a.kind == 'image')).length;
+      return SmartVaultResult(type: 'stats', title: '📸 Image Notes', subtitle: 'You have $count notes with images');
+    }
+    if (lower.contains('voice') || lower.contains('audio') || lower.contains('recording')) {
+      final count = activeNotes.where((n) => n.type == NoteType.voice || n.transcript.isNotEmpty).length;
+      return SmartVaultResult(type: 'stats', title: '🎤 Voice Notes', subtitle: 'You have $count voice recordings');
+    }
+    if (lower.contains('checklist') || lower.contains('todo') || lower.contains('task')) {
+      final count = activeNotes.where((n) => n.type == NoteType.checklist).length;
+      return SmartVaultResult(type: 'stats', title: '✅ Checklists', subtitle: 'You have $count checklist notes');
+    }
+    if (lower.contains('drawing') || lower.contains('sketch') || lower.contains('doodle')) {
+      final count = activeNotes.where((n) => n.type == NoteType.drawing).length;
+      return SmartVaultResult(type: 'stats', title: '🎨 Drawings', subtitle: 'You have $count drawing notes');
+    }
+    if (lower.contains('folder') || lower.contains('folders')) {
+      final folders = activeNotes.map((n) => n.folder).toSet().toList()..sort();
+      final counts = <String, int>{};
+      for (final n in activeNotes) {
+        counts[n.folder] = (counts[n.folder] ?? 0) + 1;
+      }
+      final detail = folders.map((f) => '$f (${counts[f]})').join(', ');
+      return SmartVaultResult(type: 'stats', title: '📁 Folder Breakdown', subtitle: '${folders.length} folders: $detail');
+    }
+
+    // Count by specific folder
+    const folderKeywords = <String>{'finance', 'work', 'personal', 'tech', 'health', 'education', 'shopping', 'travel'};
+    for (final kw in folderKeywords) {
+      if (lower.contains(kw) && (lower.contains('note') || lower.contains('count') || lower.contains('many') || lower.contains('total'))) {
+        final folderName = kw[0].toUpperCase() + kw.substring(1);
+        final count = activeNotes.where((n) => n.folder.toLowerCase() == folderName.toLowerCase()).length;
+        return SmartVaultResult(type: 'stats', title: '📁 $folderName Notes', subtitle: 'You have $count notes in $folderName');
+      }
+    }
+
+    // Total counts
+    final noteCount = activeNotes.length;
+    final archivedCount = notes.where((n) => n.archived).length;
+    final deletedCount = notes.where((n) => n.deleted).length;
+
+    final parts = <String>['$noteCount active notes'];
+    if (archivedCount > 0) parts.add('$archivedCount archived');
+    if (deletedCount > 0) parts.add('$deletedCount in trash');
+
+    // Password count if available
+    String? pwInfo;
+    if (ctx?.passwords != null) {
+      try {
+        final pwEntries = await ctx!.passwords!.loadActiveEntries();
+        pwInfo = ' • ${pwEntries.length} password entries';
+      } catch (_) {}
+    }
+
+    return SmartVaultResult(
+      type: 'stats',
+      title: '📊 Vault Statistics',
+      subtitle: parts.join(', ') + (pwInfo ?? ''),
+    );
+  }
+
+  Future<SmartVaultResult> _handleBackupStatus(SmartVaultContext? ctx) async {
+    // We can't access Hive boxes directly from here, but we can check backup metadata
+    try {
+      final box = await Hive.openBox('vaultx_backup_meta');
+      final lastBackup = box.get('last_backup_timestamp');
+      final lastProvider = box.get('last_backup_provider') ?? 'Unknown';
+      final autoBackup = box.get('auto_backup_enabled') ?? false;
+
+      String subtitle;
+      if (lastBackup != null) {
+        final date = DateTime.fromMillisecondsSinceEpoch(lastBackup as int);
+        final diff = DateTime.now().difference(date);
+        String ago;
+        if (diff.inMinutes < 60) {
+          ago = '${diff.inMinutes} minutes ago';
+        } else if (diff.inHours < 24) {
+          ago = '${diff.inHours} hours ago';
+        } else if (diff.inDays < 7) {
+          ago = '${diff.inDays} days ago';
+        } else {
+          ago = '${date.month}/${date.year}';
+        }
+        subtitle = 'Last backup: $ago via $lastProvider';
+      } else {
+        subtitle = 'No backup has been performed yet. Go to Settings > Backup & Restore to create one.';
+      }
+      if (autoBackup == true) subtitle += ' • Auto-backup is enabled';
+
+      await box.close();
+      return SmartVaultResult(type: 'backup_status', title: '💾 Backup Status', subtitle: subtitle);
+    } catch (_) {
+      return const SmartVaultResult(
+        type: 'backup_status',
+        title: '💾 Backup Status',
+        subtitle: 'Backup info not available. Go to Settings > Backup & Restore to configure.',
+      );
+    }
+  }
+
+  Future<SmartVaultResult> _handleStorageStatus(SmartVaultContext? ctx) async {
+    try {
+      // Get drive file stats
+      String? driveInfo;
+      if (ctx?.drive != null) {
+        final files = await ctx!.drive!.loadFiles();
+        final totalSize = files.fold<int>(0, (s, f) => s + f.size);
+        final fileTypes = <String, int>{};
+        for (final f in files) {
+          final ext = f.name.contains('.') ? f.name.split('.').last.toUpperCase() : 'FILE';
+          fileTypes[ext] = (fileTypes[ext] ?? 0) + 1;
+        }
+        final sizeStr = totalSize > 1048576
+            ? '${(totalSize / 1048576).toStringAsFixed(1)} MB'
+            : totalSize > 1024
+                ? '${(totalSize / 1024).toStringAsFixed(1)} KB'
+                : '$totalSize B';
+        driveInfo = '$sizeStr across ${files.length} files (${fileTypes.length} types)';
+      }
+
+      // Note storage
+      if (ctx?.repo != null) {
+        final notes = await ctx!.repo!.loadNotes();
+        final active = notes.where((n) => !n.deleted);
+        final totalChars = active.fold<int>(0, (s, n) => s + n.title.length + n.body.length);
+        final noteStorage = totalChars > 1048576
+            ? '${(totalChars / 1048576).toStringAsFixed(1)} MB'
+            : totalChars > 1024
+                ? '${(totalChars / 1024).toStringAsFixed(1)} KB'
+                : '$totalChars B';
+
+        final parts = <String>['Notes: ~$noteStorage'];
+        if (driveInfo != null) parts.add('Drive: $driveInfo');
+
+        return SmartVaultResult(
+          type: 'storage_status',
+          title: '💿 Storage Overview',
+          subtitle: parts.join('\n'),
+        );
+      }
+
+      if (driveInfo != null) {
+        return SmartVaultResult(
+          type: 'storage_status',
+          title: '💿 Drive Storage',
+          subtitle: driveInfo,
+        );
+      }
+
+      return const SmartVaultResult(
+        type: 'storage_status',
+        title: '💿 Storage',
+        subtitle: 'Storage details are not available right now.',
+      );
+    } catch (_) {
+      return const SmartVaultResult(
+        type: 'storage_status',
+        title: '💿 Storage',
+        subtitle: 'Could not retrieve storage information.',
+      );
+    }
+  }
+
+  Future<SmartVaultResult> _handleTrashStatus(SmartVaultContext? ctx) async {
+    if (ctx?.trash == null) {
+      return const SmartVaultResult(
+        type: 'trash_status',
+        title: '🗑️ Trash',
+        subtitle: 'Trash service not available.',
+      );
+    }
+    try {
+      final items = await ctx!.trash!.loadAllTrash();
+      if (items.isEmpty) {
+        return const SmartVaultResult(
+          type: 'trash_status',
+          title: '🗑️ Trash is Empty',
+          subtitle: 'No deleted items.',
+        );
+      }
+      final typeCounts = <String, int>{};
+      int totalSize = 0;
+      for (final item in items) {
+        typeCounts[item.type] = (typeCounts[item.type] ?? 0) + 1;
+        totalSize += item.size;
+      }
+      final detail = typeCounts.entries.map((e) => '${e.value} ${e.key}${e.value > 1 ? 's' : ''}').join(', ');
+      final oldest = items.map((i) => i.deletedAt).reduce((a, b) => a.isBefore(b) ? a : b);
+      String subtitle = '$detail in trash';
+      if (totalSize > 0) {
+        subtitle += ' (${totalSize > 1048576 ? '${(totalSize / 1048576).toStringAsFixed(1)} MB' : '${(totalSize / 1024).toStringAsFixed(1)} KB'})';
+      }
+      subtitle += ' • Oldest item: ${oldest.month}/${oldest.day}';
+      return SmartVaultResult(type: 'trash_status', title: '🗑️ ${items.length} Items in Trash', subtitle: subtitle);
+    } catch (_) {
+      return const SmartVaultResult(
+        type: 'trash_status',
+        title: '🗑️ Trash',
+        subtitle: 'Could not load trash information.',
+      );
+    }
+  }
+
+  Future<SmartVaultResult> _handleSecurityStatus(SmartVaultContext? ctx) async {
+    final parts = <String>[];
+
+    if (ctx?.auth != null) {
+      final bioAvail = await ctx!.auth!.biometricAvailable();
+      final bioEnabled = await ctx.auth!.isBiometricUnlockAvailable();
+      parts.add('🔓 Biometric: ${bioEnabled ? 'Enabled' : bioAvail ? 'Available (not set up)' : 'Not available on this device'}');
+    }
+
+    // Check for dead man's switch
+    try {
+      final dmBox = await Hive.openBox('vaultx_deadman');
+      final dmEnabled = dmBox.get('enabled') ?? false;
+      if (dmEnabled == true) {
+        final gracePeriod = dmBox.get('grace_days') ?? 7;
+        parts.add('💀 Dead Man\'s Switch: Active ($gracePeriod day grace period)');
+      } else {
+        parts.add('💀 Dead Man\'s Switch: Disabled');
+      }
+      await dmBox.close();
+    } catch (_) {}
+
+    // Intruder capture
+    try {
+      final intruderBox = await Hive.openBox('vaultx_intruder');
+      final captureEnabled = intruderBox.get('capture_enabled') ?? false;
+      parts.add('📸 Intruder Capture: ${captureEnabled == true ? 'On' : 'Off'}');
+      await intruderBox.close();
+    } catch (_) {}
+
+    return SmartVaultResult(
+      type: 'security_status',
+      title: '🔒 Security Status',
+      subtitle: parts.join('\n'),
+    );
+  }
+
+  Future<SmartVaultResult> _handleCreateNote(String query, SmartVaultContext? ctx) async {
+    if (ctx?.repo == null) {
+      return const SmartVaultResult(
+        type: 'error',
+        title: 'Cannot create note',
+        subtitle: 'Repository not available.',
+      );
+    }
+    final title = _extractTitleFromCreateQuery(query);
+    if (title.isEmpty) {
+      return const SmartVaultResult(
+        type: 'error',
+        title: 'What should I name the note?',
+        subtitle: 'Try: "create a note called Groceries with content milk, eggs, bread"',
+      );
+    }
+    final body = _extractBodyFromCreateQuery(query);
+    final folder = _extractFolderFromQuery(query);
+
+    try {
+      final note = SecureNote(
+        id: const Uuid().v4(),
+        title: title,
+        body: body,
+        folder: folder,
+        type: NoteType.text,
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+      await ctx!.repo!.save(note);
+
+      return SmartVaultResult(
+        type: 'create_note',
+        title: '✅ Note Created',
+        subtitle: '"$title" saved in $folder folder${body.isNotEmpty ? '\n\n$body' : ''}',
+        notes: [note],
+      );
+    } catch (e) {
+      return SmartVaultResult(
+        type: 'error',
+        title: 'Failed to create note',
+        subtitle: e.toString(),
+      );
+    }
+  }
+
+  Future<SmartVaultResult> _handleDeleteNote(String query, List<SecureNote> notes, SmartVaultContext? ctx) async {
+    if (ctx?.repo == null) {
+      return const SmartVaultResult(type: 'error', title: 'Cannot delete notes', subtitle: 'Repository not available.');
+    }
+    final matchedNote = _findBestMention(notes, query);
+    if (matchedNote == null) {
+      return SmartVaultResult(
+        type: 'error',
+        title: 'Which note should I delete?',
+        subtitle: 'Try: "delete my cricket notes" or "remove notes about finance"',
+      );
+    }
+
+    try {
+      await ctx!.repo!.moveToTrash(matchedNote);
+      return SmartVaultResult(
+        type: 'action_done',
+        title: '🗑️ Note Deleted',
+        subtitle: '"${matchedNote.title}" has been moved to trash.',
+        notes: [matchedNote],
+      );
+    } catch (e) {
+      return SmartVaultResult(type: 'error', title: 'Failed to delete note', subtitle: e.toString());
+    }
+  }
+
+  Future<SmartVaultResult> _handleArchiveNote(String query, List<SecureNote> notes, SmartVaultContext? ctx) async {
+    if (ctx?.itemActions == null && ctx?.repo == null) {
+      return const SmartVaultResult(type: 'error', title: 'Cannot archive notes', subtitle: 'Services not available.');
+    }
+    final matchedNote = _findBestMention(notes, query);
+    if (matchedNote == null) {
+      return SmartVaultResult(
+        type: 'error',
+        title: 'Which note should I archive?',
+        subtitle: 'Try: "archive my finance notes" or "archive last week notes"',
+      );
+    }
+
+    try {
+      final updated = matchedNote.copyWith(archived: !matchedNote.archived);
+      await ctx!.repo!.save(updated);
+      return SmartVaultResult(
+        type: 'action_done',
+        title: matchedNote.archived ? '📦 Note Unarchived' : '📦 Note Archived',
+        subtitle: '"${matchedNote.title}" has been ${matchedNote.archived ? 'restored from' : 'moved to'} archive.',
+        notes: [updated],
+      );
+    } catch (e) {
+      return SmartVaultResult(type: 'error', title: 'Failed to archive note', subtitle: e.toString());
+    }
+  }
+
+  Future<SmartVaultResult> _handlePinNote(String query, List<SecureNote> notes, SmartVaultContext? ctx) async {
+    if (ctx?.repo == null) {
+      return const SmartVaultResult(type: 'error', title: 'Cannot pin notes', subtitle: 'Repository not available.');
+    }
+    final matchedNote = _findBestMention(notes, query);
+    if (matchedNote == null) {
+      return SmartVaultResult(
+        type: 'error',
+        title: 'Which note should I pin?',
+        subtitle: 'Try: "pin my finance notes" or "pin the cricket notes"',
+      );
+    }
+
+    try {
+      final updated = matchedNote.copyWith(pinned: !matchedNote.pinned);
+      await ctx!.repo!.save(updated);
+      return SmartVaultResult(
+        type: 'action_done',
+        title: updated.pinned ? '📌 Note Pinned' : '📌 Note Unpinned',
+        subtitle: '"${matchedNote.title}" is ${updated.pinned ? 'now pinned to top' : 'no longer pinned'}',
+        notes: [updated],
+      );
+    } catch (e) {
+      return SmartVaultResult(type: 'error', title: 'Failed to pin note', subtitle: e.toString());
+    }
+  }
+
+  Future<SmartVaultResult> _handlePasswordQuery(String query, SmartVaultContext? ctx) async {
+    if (ctx?.passwords == null) {
+      return const SmartVaultResult(
+        type: 'error',
+        title: 'Password manager not available',
+        subtitle: 'The password service is not initialized.',
+      );
+    }
+    try {
+      final entries = await ctx!.passwords!.loadActiveEntries();
+      if (entries.isEmpty) {
+        return const SmartVaultResult(
+          type: 'password_query',
+          title: '🔑 No Passwords Stored',
+          subtitle: 'You haven\'t saved any passwords yet. Go to Password Manager to add some.',
+        );
+      }
+
+      final lower = query.toLowerCase();
+      final searchTerms = lower
+          .replaceAll(RegExp(r'(show|me|find|get|search|my|password|passwords|credential|for|of|the|a|an)'), '')
+          .trim()
+          .split(RegExp(r'\s+'))
+          .where((w) => w.length > 1)
+          .toList();
+
+      if (searchTerms.isNotEmpty) {
+        final matched = entries.where((e) =>
+          e.serviceName.toLowerCase().contains(searchTerms.first) ||
+          e.username.toLowerCase().contains(searchTerms.first) ||
+          e.tags.any((t) => t.toLowerCase().contains(searchTerms.first))).toList();
+
+        if (matched.isNotEmpty) {
+          final entry = matched.first;
+          return SmartVaultResult(
+            type: 'password_query',
+            title: '🔑 ${entry.serviceName}',
+            subtitle: 'Username: ${entry.username}\nPassword: •••••••• (view in Password Manager)\nTags: ${entry.tags.isEmpty ? "none" : entry.tags.join(", ")}',
+          );
+        }
+      }
+
+      return SmartVaultResult(
+        type: 'password_query',
+        title: '🔑 ${entries.length} Password Entries',
+        subtitle: entries.map((e) => '• ${e.serviceName} (${e.username})').take(10).join('\n'),
+      );
+    } catch (e) {
+      return SmartVaultResult(type: 'error', title: 'Could not load passwords', subtitle: e.toString());
+    }
+  }
+
+  Future<SmartVaultResult> _handleGeneratePassword() async {
+    // Generate a cryptographically-strong random password
+    final length = 24;
+    final upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    final lower = 'abcdefghijklmnopqrstuvwxyz';
+    final digits = '0123456789';
+    final special = '!@#\$%^&*()-_=+[]{}|;:,.<>?';
+    final all = upper + lower + digits + special;
+
+    final random = Random.secure();
+
+    // Ensure at least one of each type
+    final pw = StringBuffer();
+    pw.write(upper[random.nextInt(upper.length)]);
+    pw.write(lower[random.nextInt(lower.length)]);
+    pw.write(digits[random.nextInt(digits.length)]);
+    pw.write(special[random.nextInt(special.length)]);
+    for (var i = 4; i < length; i++) {
+      pw.write(all[random.nextInt(all.length)]);
+    }
+
+    // Shuffle
+    final chars = pw.toString().split('');
+    chars.shuffle(random);
+    final finalPw = chars.join();
+
+    return SmartVaultResult(
+      type: 'generate_password',
+      title: '🔐 Generated Password',
+      subtitle: '$finalPw\n\nLength: $length characters • Mixed case + numbers + symbols\nCopy it from Password Manager.',
+    );
+  }
+
+  Future<SmartVaultResult> _handleEmptyTrash(SmartVaultContext? ctx) async {
+    if (ctx?.trash == null) {
+      return const SmartVaultResult(type: 'error', title: 'Cannot empty trash', subtitle: 'Trash service not available.');
+    }
+    try {
+      await ctx!.trash!.emptyTrash();
+      return const SmartVaultResult(
+        type: 'action_done',
+        title: '🗑️ Trash Emptied',
+        subtitle: 'All deleted items have been permanently removed.',
+      );
+    } catch (e) {
+      return SmartVaultResult(type: 'error', title: 'Failed to empty trash', subtitle: e.toString());
+    }
+  }
+
+  Future<SmartVaultResult> _handleLockVault() async {
+    return const SmartVaultResult(
+      type: 'lock_vault',
+      title: '🔒 Locking Vault',
+      subtitle: 'The vault will be locked...',
+    );
+  }
+
+  Future<SmartVaultResult> _handleTriggerBackup(SmartVaultContext? ctx) async {
+    return const SmartVaultResult(
+      type: 'trigger_backup',
+      title: '📤 Starting Backup',
+      subtitle: 'Opening backup screen...',
+    );
   }
 
   List<String> _expandQuery(String query) {
@@ -353,12 +1060,11 @@ class SmartVaultService {
 
   List<String> _generateSmartSuggestions(List<SecureNote> notes) {
     final suggestions = <String>[
+      'How many notes do I have',
       'Show notes from today',
-      'Find backup notes',
-      'Show recent work',
-      'Find passwords',
-      'Find my cricket notes',
-      'Summarize my finance notes',
+      'What is dead man switch',
+      'Create a note called Ideas',
+      'Open settings',
     ];
 
     if (notes.any((n) => n.attachments.isNotEmpty && n.attachments.any((a) => a.kind == 'image'))) {
@@ -371,6 +1077,15 @@ class SmartVaultService {
 
     if (notes.any((n) => n.tags.contains('work') || n.folder.toLowerCase() == 'work')) {
       suggestions.add('What did I work on today');
+    }
+
+    if (notes.any((n) => n.folder.toLowerCase() == 'finance')) {
+      suggestions.add('Summarize my finance notes');
+    }
+
+    if (notes.length > 5) {
+      suggestions.add('Show me my recent notes');
+      suggestions.add('Find related notes');
     }
 
     return suggestions;
@@ -520,7 +1235,7 @@ class SmartVaultService {
     return null;
   }
 
-  Future<SmartVaultResult> processQuery(String query, List<SecureNote> allNotes) async {
+  Future<SmartVaultResult> processQuery(String query, List<SecureNote> allNotes, {SmartVaultContext? context}) async {
     final lower = query.trim().toLowerCase();
     if (lower.isEmpty) {
       return const SmartVaultResult(
@@ -543,6 +1258,38 @@ class SmartVaultService {
     }
 
     switch (intent) {
+      // New intents (high priority)
+      case 'knowledge':
+        return _handleKnowledge(query);
+      case 'stats':
+        return _handleStats(query, activeNotes, context);
+      case 'backup_status':
+        return _handleBackupStatus(context);
+      case 'storage_status':
+        return _handleStorageStatus(context);
+      case 'trash_status':
+        return _handleTrashStatus(context);
+      case 'security_status':
+        return _handleSecurityStatus(context);
+      case 'create_note':
+        return _handleCreateNote(query, context);
+      case 'delete_note':
+        return _handleDeleteNote(query, activeNotes, context);
+      case 'archive_note':
+        return _handleArchiveNote(query, activeNotes, context);
+      case 'pin_note':
+        return _handlePinNote(query, activeNotes, context);
+      case 'password_query':
+        return _handlePasswordQuery(query, context);
+      case 'generate_password':
+        return _handleGeneratePassword();
+      case 'empty_trash':
+        return _handleEmptyTrash(context);
+      case 'lock_vault':
+        return _handleLockVault();
+      case 'trigger_backup':
+        return _handleTriggerBackup(context);
+      // Existing intents
       case 'summarize':
         return _handleSummarize(query, activeNotes);
       case 'timeline':
@@ -957,11 +1704,21 @@ class SmartVaultService {
   Future<SmartVaultResult> _handleNavigate(String query) async {
     final lower = query.toLowerCase();
     String target = 'Unknown';
+
     if (lower.contains('home')) target = 'Home';
+    if (lower.contains('password') || lower.contains('credential') || lower.contains('login')) target = 'Password Manager';
+    if (lower.contains('trash') || lower.contains('bin') || lower.contains('deleted')) target = 'Trash';
+    if (lower.contains('archive') || lower.contains('archived')) target = 'Archive';
+    if (lower.contains('drive') && (lower.contains('tool') || lower.contains('compress') || lower.contains('optimize') || lower.contains('convert'))) target = 'Drive Tools';
     if (lower.contains('drive')) target = 'Drive';
+    if (lower.contains('security log') || lower.contains('intruder') || lower.contains('audit')) target = 'Security Logs';
+    if (lower.contains('storage') && (lower.contains('insight') || lower.contains('usage'))) target = 'Storage Insights';
+    if (lower.contains('smart view')) target = 'Smart View';
+    if (lower.contains('smart categor') || lower.contains('category')) target = 'Smart Categories';
     if (lower.contains('security')) target = 'Security';
     if (lower.contains('settings')) target = 'Settings';
-    if (lower.contains('game')) target = 'VaultX Game';
+    if (lower.contains('game') || lower.contains('play')) target = 'VaultX Game';
+    if (lower.contains('backup') || lower.contains('restore')) target = 'Backup';
 
     return SmartVaultResult(
       type: 'navigate',

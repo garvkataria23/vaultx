@@ -1,5 +1,7 @@
 /// Represents the type of note content.
-enum NoteType { text, checklist, voice, drawing }
+enum NoteType { text, checklist, voice, drawing, todo }
+
+enum TodoPriority { low, medium, high }
 
 /// A single checklist item within a note.
 class ChecklistItem {
@@ -9,6 +11,73 @@ class ChecklistItem {
   Map<String, dynamic> toJson() => {'text': text, 'done': done};
   factory ChecklistItem.fromJson(Map<String, dynamic> json) =>
       ChecklistItem(json['text'] as String? ?? '', json['done'] as bool? ?? false);
+}
+
+/// A single task within a Todo note.
+class TodoTask {
+  const TodoTask({
+    required this.id,
+    required this.text,
+    this.done = false,
+    this.priority = TodoPriority.medium,
+    this.dueDate,
+    this.reminderAt,
+    this.colorTag,
+    this.progress = 0,
+  });
+
+  final String id;
+  final String text;
+  final bool done;
+  final TodoPriority priority;
+  final DateTime? dueDate;
+  final DateTime? reminderAt;
+  final String? colorTag;
+  final int progress; // 0-100
+
+  TodoTask copyWith({
+    String? id,
+    String? text,
+    bool? done,
+    TodoPriority? priority,
+    DateTime? dueDate,
+    DateTime? reminderAt,
+    String? colorTag,
+    int? progress,
+  }) {
+    return TodoTask(
+      id: id ?? this.id,
+      text: text ?? this.text,
+      done: done ?? this.done,
+      priority: priority ?? this.priority,
+      dueDate: dueDate ?? this.dueDate,
+      reminderAt: reminderAt ?? this.reminderAt,
+      colorTag: colorTag ?? this.colorTag,
+      progress: progress ?? this.progress,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'text': text,
+    'done': done,
+    'priority': priority.name,
+    'dueDate': dueDate?.toIso8601String(),
+    'reminderAt': reminderAt?.toIso8601String(),
+    'colorTag': colorTag,
+    'progress': progress,
+  };
+
+  factory TodoTask.fromJson(Map<String, dynamic> json) => TodoTask(
+    id: json['id'] as String? ?? '',
+    text: json['text'] as String? ?? '',
+    done: json['done'] as bool? ?? false,
+    priority: TodoPriority.values.byName(json['priority'] as String? ?? 'medium'),
+    dueDate: json['dueDate'] != null ? DateTime.tryParse(json['dueDate'] as String) : null,
+    reminderAt: json['reminderAt'] != null ? DateTime.tryParse(json['reminderAt'] as String) : null,
+    colorTag: json['colorTag'] as String?,
+    progress: json['progress'] as int? ?? 0,
+  );
 }
 
 /// Metadata for an encrypted file attachment.
@@ -110,6 +179,7 @@ class SecureNote {
     this.oneTimeView = false,
     this.expiresAt,
     this.checklist = const [],
+    this.todoList = const [],
     this.attachments = const [],
     this.versions = const [],
     this.ocrText = '',
@@ -144,6 +214,7 @@ class SecureNote {
   final bool oneTimeView;
   final DateTime? expiresAt;
   final List<ChecklistItem> checklist;
+  final List<TodoTask> todoList;
   final List<SecureAttachment> attachments;
   final List<Map<String, dynamic>> versions;
   final String ocrText;
@@ -189,6 +260,7 @@ class SecureNote {
     oneTimeView: oneTimeView,
     expiresAt: expiresAt,
     checklist: checklist,
+    todoList: todoList,
     attachments: attachments,
     versions: versions,
     ocrText: ocrText,
@@ -220,6 +292,7 @@ class SecureNote {
     bool? oneTimeView,
     DateTime? expiresAt,
     List<ChecklistItem>? checklist,
+    List<TodoTask>? todoList,
     List<SecureAttachment>? attachments,
     List<Map<String, dynamic>>? versions,
     String? ocrText,
@@ -258,6 +331,7 @@ class SecureNote {
       oneTimeView: oneTimeView ?? this.oneTimeView,
       expiresAt: expiresAt ?? this.expiresAt,
       checklist: checklist ?? this.checklist,
+      todoList: todoList ?? this.todoList,
       attachments: attachments ?? this.attachments,
       versions: versions ?? this.versions,
       ocrText: ocrText ?? this.ocrText,
@@ -294,6 +368,7 @@ class SecureNote {
     'oneTimeView': oneTimeView,
     'expiresAt': expiresAt?.toIso8601String(),
     'checklist': checklist.map((e) => e.toJson()).toList(),
+    'todoList': todoList.map((e) => e.toJson()).toList(),
     'attachments': attachments.map((e) => e.toJson()).toList(),
     'versions': versions,
     'ocrText': ocrText,
@@ -342,6 +417,9 @@ class SecureNote {
         : DateTime.tryParse(json['expiresAt'] as String? ?? ''),
     checklist: (json['checklist'] as List? ?? const [])
         .map((e) => e is Map ? ChecklistItem.fromJson(Map<String, dynamic>.from(e)) : const ChecklistItem('', false))
+        .toList(),
+    todoList: (json['todoList'] as List? ?? const [])
+        .map<TodoTask>((e) => e is Map ? TodoTask.fromJson(Map<String, dynamic>.from(e)) : const TodoTask(id: '', text: ''))
         .toList(),
     attachments: (json['attachments'] as List? ?? const []).map((e) {
       if (e is String) {

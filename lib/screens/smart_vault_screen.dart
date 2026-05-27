@@ -7,6 +7,7 @@ import 'package:record/record.dart' as record;
 
 import '../models/models.dart';
 import '../services/services.dart';
+import '../services/auth_session_manager.dart';
 import '../services/ai_navigation_service.dart';
 import 'note_editor.dart';
 
@@ -166,8 +167,18 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
     _scrollToBottom();
 
     try {
-      final result = await _service.processQuery(trimmed, widget.notes);
+      final svc = SmartVaultContext(
+        repo: widget.repo,
+        passwords: _passwordVault,
+        drive: _drive,
+        trash: _trash,
+        itemActions: _itemActions,
+        auth: widget.auth,
+        vaultKind: widget.vaultKind,
+      );
+      var result = await _service.processQuery(trimmed, widget.notes, context: svc);
 
+      // Handle navigation intent
       if (result.type == 'navigate') {
         final intent = IntentParser.parse(trimmed);
         if (mounted) {
@@ -177,10 +188,13 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
             arguments: {
               'auth': widget.auth,
               'repo': widget.repo,
+              'masterKey': widget.authResult?.masterKey,
               'drive': _drive,
               'passwordVault': _passwordVault,
               'itemActions': _itemActions,
               'trashService': _trash,
+              'notes': widget.notes,
+              'blobs': widget.blobs,
               'isDecoy': widget.vaultKind == VaultKind.decoy,
               'vaultKind': widget.vaultKind,
               'onDataChanged': () async {}, // Placeholder
@@ -193,7 +207,58 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
             });
             return;
           }
+          result = SmartVaultResult(
+            type: 'error',
+            title: 'Could not navigate to ${result.title.replaceAll('Navigating to ', '')}',
+            subtitle: 'This action is not available right now.',
+          );
         }
+      }
+
+      // Handle lock vault
+      if (result.type == 'lock_vault' && mounted) {
+        AuthSessionManager.instance.lock();
+        setState(() {
+          _isProcessing = false;
+          _statusText = '';
+        });
+        Navigator.of(context).popUntil((route) => route.isFirst);
+        return;
+      }
+
+      // Handle trigger backup
+      if (result.type == 'trigger_backup' && mounted) {
+        final masterKey = widget.authResult?.masterKey;
+        if (masterKey != null) {
+          final success = await ActionExecutor.execute(
+            context,
+            AIIntent.openBackup,
+            arguments: {
+              'auth': widget.auth,
+              'repo': widget.repo,
+              'masterKey': masterKey,
+              'vaultKind': widget.vaultKind,
+            },
+          );
+          if (success) {
+            setState(() {
+              _isProcessing = false;
+              _statusText = '';
+            });
+            return;
+          }
+        }
+        // Fallback: show message
+        result = const SmartVaultResult(
+          type: 'error',
+          title: 'Could not start backup',
+          subtitle: 'Backup screen not available right now.',
+        );
+      }
+
+      // Handle CRUD actions that may have modified notes list
+      if (result.type == 'create_note' || result.type == 'action_done') {
+        _statusText = 'Action completed';
       }
 
       if (!mounted) return;

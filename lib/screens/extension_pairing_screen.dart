@@ -23,7 +23,7 @@ class ExtensionPairingScreen extends StatelessWidget {
                   const SizedBox(height: 24),
                   Text('Connect Browser Extension', style: Theme.of(context).textTheme.headlineSmall),
                   const SizedBox(height: 16),
-                  const Text('1. Install VaultX extension in your browser.\n2. Click the extension icon.\n3. Enter the IP, Port, and Pairing PIN below.', textAlign: TextAlign.center),
+                  const Text('1. Install Notex extension in your browser.\n2. Click the extension icon.\n3. Enter the IP, Port, and Pairing PIN below.', textAlign: TextAlign.center),
                   const SizedBox(height: 32),
                   if (svc.isRunning) ...[
                     _buildInfoCard(context, 'IP Address', '127.0.0.1'),

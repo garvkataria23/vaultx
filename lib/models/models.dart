@@ -1,4 +1,4 @@
-export '../screens/vaultx_app.dart' show VaultAppState;
+export 'app_state.dart' show VaultAppState;
 export 'auth.dart' show AuthResult, VaultKind;
 export 'backup.dart'
     show
@@ -16,5 +16,5 @@ export 'backup.dart'
         RestoreInfo,
         RestoreProgress;
 export 'drive_file.dart' show SecureDriveFile, SecureDriveFolder;
-export 'note.dart' show SecureNote, ChecklistItem, SecureAttachment, NoteType;
+export 'note.dart' show SecureNote, ChecklistItem, TodoTask, TodoPriority, SecureAttachment, NoteType;
 export 'password_entry.dart' show PasswordEntry;

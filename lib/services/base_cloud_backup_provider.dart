@@ -118,7 +118,7 @@ abstract class BaseCloudBackupProvider implements CloudStorageProvider {
       // (happens if naming convention wasn't caught above), we should try downloading parts.
       if (!version.fileName.endsWith('_manifest.json') && !version.fileName.endsWith('_m.dat')) {
         try {
-          final decoded = jsonDecode(utf8.decode(bytes!)) as Map<String, dynamic>;
+          final decoded = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
           if (decoded['type'] == 'chunked_manifest') {
              debugPrint('DOWNLOAD VERSION: caught chunked manifest by content');
              final baseName = version.fileName.split('.').first;

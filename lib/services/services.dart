@@ -30,6 +30,8 @@ export 'share_service.dart' show ShareService;
 export 'note_analyzer.dart'
     show NoteCategory, NoteAnalysis, NoteAnalyzerService;
 export 'password_vault_service.dart' show PasswordVaultService;
+export 'password_manager_provider.dart' show PasswordManagerProvider;
+export 'locale_provider.dart' show LocaleProvider;
 export 'ocr_preprocessor.dart' show OcrPreprocessor, OcrPreprocessingResult;
 export 'ocr_queue_service.dart'
     show OcrQueueService, OcrJob, OcrJobState, OcrBatchItem;
@@ -56,8 +58,10 @@ export 'full_export_service.dart' show FullExportService;
 export 'transcription_service.dart' show TranscriptionService;
 export 'share_package_service.dart' show SharePackageService;
 export 'summarization_service.dart' show SummarizationService;
-export 'smart_vault_service.dart' show SmartVaultService, SmartVaultResult, AIMemory;
+export 'smart_vault_service.dart' show SmartVaultService, SmartVaultResult, SmartVaultContext, AIMemory;
 export 'trash_service.dart' show TrashService, TrashItem;
 export 'navigation_service.dart' show NavigationService;
 export 'browser_extension_service.dart' show BrowserExtensionService;
+export 'startup_diagnostics.dart' show StartupDiagnostics;
+export 'recovery_service.dart' show RecoveryService, RecoveryResult;
 

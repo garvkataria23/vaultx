@@ -20,12 +20,16 @@ class SearchIndexService {
     _initCompleter = Completer<void>();
     try {
       debugPrint('SEARCH_INDEX: opening box...');
-      _box = await Hive.openBox(_boxName);
+      if (!Hive.isBoxOpen(_boxName)) {
+        _box = await Hive.openBox(_boxName);
+      } else {
+        _box = Hive.box(_boxName);
+      }
       _initCompleter!.complete();
     } catch (e) {
+      debugPrint('SEARCH_INDEX: open failed — $e');
       _initCompleter!.completeError(e);
       _initCompleter = null;
-      rethrow;
     }
   }
 

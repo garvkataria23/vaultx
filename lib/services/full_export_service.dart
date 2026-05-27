@@ -168,7 +168,6 @@ class FullExportService {
           // Find owner note and attachment metadata
           SecureNote? owner;
           SecureAttachment? attachment;
-          String ownerPrefix = 'main';
 
           for (final rawNote in allNotesRaw) {
             try {
@@ -182,7 +181,6 @@ class FullExportService {
               if (found.isNotEmpty) {
                 owner = clear;
                 attachment = found.first;
-                ownerPrefix = recordsBox.get('main:$id') != null ? 'main' : 'hidden';
                 break;
               }
             } catch (_) {}

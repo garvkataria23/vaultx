@@ -73,6 +73,7 @@ class NoteCard extends StatelessWidget {
               children: [
                 Icon(switch (note.type) {
                   NoteType.checklist => Icons.checklist,
+                  NoteType.todo => Icons.playlist_add_check,
                   NoteType.voice => Icons.mic,
                   NoteType.drawing => Icons.brush,
                   _ => Icons.description,
@@ -385,6 +386,7 @@ class ModernNoteCard extends StatelessWidget {
                             Icon(
                               switch (note.type) {
                                 NoteType.checklist => Icons.checklist_rtl_outlined,
+                                NoteType.todo => Icons.playlist_add_check_outlined,
                                 NoteType.voice => Icons.mic_none_outlined,
                                 NoteType.drawing => Icons.brush_outlined,
                                 _ => Icons.notes_outlined,
@@ -472,6 +474,10 @@ class NoteTypePicker extends StatelessWidget {
             onTap: () => Navigator.pop(context, NoteType.checklist),
           ),
           ListTile(
+            leading: const Icon(Icons.playlist_add_check),
+            title: const Text('Todo List'),
+            onTap: () => Navigator.pop(context, NoteType.todo),
+          ),          ListTile(
             leading: const Icon(Icons.mic),
             title: const Text('Voice note'),
             onTap: () => Navigator.pop(context, NoteType.voice),

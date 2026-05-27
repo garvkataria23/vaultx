@@ -301,6 +301,10 @@ class SmartIndexerService {
         scoreField(item.text, 'checklist item');
       }
 
+      for (final task in note.todoList) {
+        scoreField(task.text, 'todo task');
+      }
+
       for (final tag in note.tags) {
         scoreField(tag, 'tag');
       }

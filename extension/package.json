@@ -1,0 +1,12 @@
+{
+  "name": "vaultx-extension",
+  "version": "1.0.0",
+  "description": "VaultX Browser Extension build pipeline",
+  "main": "background.js",
+  "scripts": {
+    "build": "node build.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "VaultX Team",
+  "license": "MIT"
+}

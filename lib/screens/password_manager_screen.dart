@@ -250,37 +250,61 @@ class _PasswordManagerScreenState extends State<PasswordManagerScreen> {
 
   Widget _buildEmptyState(ColorScheme cs) {
     return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.lock_outline,
-            size: 72,
-            color: cs.onSurface.withValues(alpha: 0.2),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'No saved passwords yet',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
-              color: cs.onSurface.withValues(alpha: 0.6),
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.lock_person_outlined,
+              size: 72,
+              color: cs.onSurface.withValues(alpha: 0.15),
             ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Tap + to add your first password entry',
-            style: TextStyle(color: cs.onSurface.withValues(alpha: 0.4)),
-          ),
-          const SizedBox(height: 24),
-          FilledButton.tonalIcon(
-            onPressed: _openAdd,
-            icon: const Icon(Icons.add),
-            label: const Text('Add Password'),
-          ),
-        ],
+            const SizedBox(height: 24),
+            Text(
+              'No passwords saved yet',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+                color: cs.onSurface,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Start securing your accounts by adding a new password or importing from a CSV/JSON file.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: cs.onSurface.withValues(alpha: 0.6),
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(height: 32),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                FilledButton.icon(
+                  onPressed: _openAdd,
+                  icon: const Icon(Icons.add),
+                  label: const Text('Add Password'),
+                ),
+                const SizedBox(width: 12),
+                OutlinedButton.icon(
+                  onPressed: _importPasswords,
+                  icon: const Icon(Icons.file_download_outlined),
+                  label: const Text('Import'),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
+  }
+
+  Future<void> _importPasswords() async {
+    // Navigate to Drive tab or trigger import flow
+    // For now, show a hint or trigger a specific import service if available
+    FloatingNotificationService.instance.show('Use the "Import file" button in the Drive tab to import password vaults.', type: AppNotificationType.info);
   }
 
   Widget _buildEntryCard(PasswordEntry entry, ColorScheme cs) {

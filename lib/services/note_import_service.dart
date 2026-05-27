@@ -12,6 +12,7 @@ import 'package:xml/xml.dart';
 
 import '../models/note.dart';
 import '../models/backup.dart';
+import 'audit_log.dart';
 import 'vault_repository.dart';
 import 'decoy_seed_service.dart';
 import 'archive_service.dart';
@@ -423,39 +424,37 @@ class NoteImportService {
             }
 
             // If we have the masterKey (which we should in NoteImportService), we can re-encrypt.
-            if (_repo != null) {
-              final masterKey = _repo.masterKey;
-              String? salt;
-              String ownerId = '';
+            final masterKey = _repo.masterKey;
+            String? salt;
+            String ownerId = '';
 
-              if (meta?['salt'] != null) {
-                salt = meta!['salt'];
-                ownerId = meta['id'];
-                final key = cryptoService.deriveRecordKey(masterKey, '$prefixStr:$ownerId', salt!);
-                final encrypted = content.length > 102400
-                    ? await cryptoService.encryptBytesIsolate(content, key)
-                    : cryptoService.encryptBytes(content, key);
-                await File('${targetDir.path}/$id.vxblob').writeAsBytes(encrypted);
-              } else {
-                // If it's an attachment, we need to find its metadata in the note.
-                final noteFiles = archive.files.where((f) => f.name.contains('/metadata/raw_notes/'));
-                for (final nf in noteFiles) {
-                  final raw = jsonDecode(utf8.decode(nf.content as List<int>));
-                  final noteId = raw['id'];
-                  final noteSalt = raw['salt'];
-                  final recordKey = cryptoService.deriveRecordKey(masterKey, noteId, noteSalt);
-                  final clear = cryptoService.decryptJson(Map<String, dynamic>.from(raw['payload']), recordKey);
-                  final note = SecureNote.fromJson(clear);
-                  final atts = note.attachments.where((a) => a.id == id);
-                  if (atts.isNotEmpty) {
-                    final att = atts.first;
-                    final key = cryptoService.deriveRecordKey(masterKey, '${note.id}:${att.id}', att.salt);
-                    final encrypted = content.length > 102400
-                        ? await cryptoService.encryptBytesIsolate(content, key)
-                        : cryptoService.encryptBytes(content, key);
-                    await File('${targetDir.path}/$id.vxblob').writeAsBytes(encrypted);
-                    break;
-                  }
+            if (meta?['salt'] != null) {
+              salt = meta!['salt'];
+              ownerId = meta['id'];
+              final key = cryptoService.deriveRecordKey(masterKey, '$prefixStr:$ownerId', salt!);
+              final encrypted = content.length > 102400
+                  ? await cryptoService.encryptBytesIsolate(content, key)
+                  : cryptoService.encryptBytes(content, key);
+              await File('${targetDir.path}/$id.vxblob').writeAsBytes(encrypted);
+            } else {
+              // If it's an attachment, we need to find its metadata in the note.
+              final noteFiles = archive.files.where((f) => f.name.contains('/metadata/raw_notes/'));
+              for (final nf in noteFiles) {
+                final raw = jsonDecode(utf8.decode(nf.content as List<int>));
+                final noteId = raw['id'];
+                final noteSalt = raw['salt'];
+                final recordKey = cryptoService.deriveRecordKey(masterKey, noteId, noteSalt);
+                final clear = cryptoService.decryptJson(Map<String, dynamic>.from(raw['payload']), recordKey);
+                final note = SecureNote.fromJson(clear);
+                final atts = note.attachments.where((a) => a.id == id);
+                if (atts.isNotEmpty) {
+                  final att = atts.first;
+                  final key = cryptoService.deriveRecordKey(masterKey, '${note.id}:${att.id}', att.salt);
+                  final encrypted = content.length > 102400
+                      ? await cryptoService.encryptBytesIsolate(content, key)
+                      : cryptoService.encryptBytes(content, key);
+                  await File('${targetDir.path}/$id.vxblob').writeAsBytes(encrypted);
+                  break;
                 }
               }
             }
@@ -490,6 +489,7 @@ class NoteImportService {
           for (final entry in data.entries) {
             await passwordsBox.put(entry.key, entry.value);
           }
+          await AuditLog.write('PASSWORD_IMPORT_SUCCESS');
         }
 
         if (processed % 20 == 0) {

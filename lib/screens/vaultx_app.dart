@@ -1,53 +1,80 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:provider/provider.dart';
 
 import '../models/auth.dart';
+import '../models/app_state.dart';
 import '../services/services.dart';
+import '../services/auth_session_manager.dart';
 import '../theme/themes.dart';
-
 import '../widgets/widgets.dart';
+import '../widgets/vault_auth_guard.dart';
 import 'screens.dart';
 
-/// App entry point — initializes Hive, enables screen protection, and runs the app.
-Future<void> runVaultX() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  FlutterError.onError = (details) {
-    FlutterError.presentError(details);
-    debugPrint('FLUTTER ERROR: ${details.exceptionAsString()}');
-    if (details.stack != null) debugPrint('${details.stack}');
-  };
-  PlatformDispatcher.instance.onError = (error, stack) {
-    debugPrint('PLATFORM ERROR: $error');
-    debugPrint('$stack');
-    return true;
-  };
-  await Hive.initFlutter();
-  await Hive.openBox('vaultx_records');
-  await Hive.openBox('vaultx_audit');
-  await Hive.openBox('vaultx_settings');
-  await Hive.openBox('vaultx_drive');
-  await Hive.openBox('vaultx_intruder');
-  await Hive.openBox('vaultx_passwords');
-  await Hive.openBox('vaultx_decoy_notes');
-  await Hive.openBox('vaultx_decoy_drive');
-  await SearchIndexService.instance.init();
-  await SecurityPlatform.enableScreenProtection();
-  final appState = VaultAppState();
-  await appState.init();
-  final themeProvider = ThemeProvider();
-  await themeProvider.init();
+import 'package:vaultx/l10n/app_localizations.dart';
 
+/// App entry point — called after Hive is initialized in main().
+Future<void> runVaultX() async {
+  debugPrint('STARTUP: runVaultX entered');
+
+  debugPrint('STARTUP: opening Hive boxes');
+  const boxNames = [
+    'vaultx_records',
+    'vaultx_audit',
+    'vaultx_settings',
+    'vaultx_drive',
+    'vaultx_intruder',
+    'vaultx_passwords',
+    'vaultx_decoy_notes',
+    'vaultx_decoy_drive',
+  ];
+  for (final name in boxNames) {
+    try {
+      await Hive.openBox(name).timeout(const Duration(seconds: 15));
+      debugPrint('STARTUP: box $name opened');
+    } catch (e) {
+      debugPrint('STARTUP_ERROR: Hive.openBox($name) failed: $e');
+    }
+  }
+  debugPrint('STARTUP: Hive boxes opened');
+  StartupDiagnostics.instance.markHiveBoxesOpen();
+
+  Future.microtask(() => SearchIndexService.instance.init());
+  Future.microtask(() => SecurityPlatform.enableScreenProtection());
+
+  debugPrint('STARTUP: initializing VaultAppState');
+  final appState = VaultAppState();
+  try {
+    await appState.init().timeout(const Duration(seconds: 10));
+    debugPrint('STARTUP: VaultAppState initialized');
+  } catch (e) {
+    debugPrint('STARTUP_ERROR: VaultAppState.init failed: $e');
+  }
+
+  debugPrint('STARTUP: initializing ThemeProvider');
+  final themeProvider = ThemeProvider();
+  try {
+    await themeProvider.init().timeout(const Duration(seconds: 10));
+    debugPrint('STARTUP: ThemeProvider initialized');
+  } catch (e) {
+    debugPrint('STARTUP_ERROR: ThemeProvider.init failed: $e');
+  }
+  StartupDiagnostics.instance.markAppStateReady();
+
+  debugPrint('STARTUP: calling runApp()');
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => appState),
         ChangeNotifierProvider(create: (_) => themeProvider),
+        ChangeNotifierProvider(create: (_) => PasswordManagerProvider()),
+        ChangeNotifierProvider(create: (_) => LocaleProvider()),
       ],
       child: const VaultXApp(),
     ),
   );
+  debugPrint('STARTUP: runApp() returned');
 }
 
 /// Global app state managed via Provider.
@@ -55,105 +82,6 @@ Future<void> runVaultX() async {
 ///
 /// All Hive reads are deferred to an async init so the app starts instantly
 /// without blocking the main thread during construction.
-class VaultAppState extends ChangeNotifier {
-  bool _onboardingComplete = false;
-  bool _strictOffline = true;
-  int _failedPinAttempts = 0;
-  int _failedBiometricAttempts = 0;
-  DateTime? _pinLockedUntil;
-  bool _initialized = false;
-  bool _disposed = false;
-
-  bool get onboardingComplete => _onboardingComplete;
-  bool get strictOffline => _strictOffline;
-  int get failedPinAttempts => _failedPinAttempts;
-  int get failedBiometricAttempts => _failedBiometricAttempts;
-  bool get isBiometricEscalated => _failedBiometricAttempts >= 5;
-  DateTime? get pinLockedUntil => _pinLockedUntil;
-  bool get isPinLocked =>
-      _pinLockedUntil != null && DateTime.now().isBefore(_pinLockedUntil!);
-  bool get isInitialized => _initialized;
-
-  @override
-  void dispose() {
-    _disposed = true;
-    super.dispose();
-  }
-
-  void _safeNotify() {
-    if (!_disposed) notifyListeners();
-  }
-
-  /// Loads persisted state from Hive asynchronously.
-  /// Must be called once after Hive boxes are open.
-  Future<void> init() async {
-    if (_initialized) return;
-    final box = Hive.box('vaultx_settings');
-    _onboardingComplete =
-        box.get('onboardingComplete', defaultValue: false) as bool;
-    _strictOffline = box.get('strictOffline', defaultValue: true) as bool;
-    _failedPinAttempts = box.get('failedPinAttempts', defaultValue: 0) as int;
-    _failedBiometricAttempts =
-        box.get('failedBiometricAttempts', defaultValue: 0) as int;
-    final lockRaw = box.get('pinLockedUntil') as String?;
-    _pinLockedUntil = lockRaw == null ? null : DateTime.tryParse(lockRaw);
-    _initialized = true;
-    _safeNotify();
-  }
-
-  Future<void> completeOnboarding() async {
-    _onboardingComplete = true;
-    await Hive.box('vaultx_settings').put('onboardingComplete', true);
-    _safeNotify();
-  }
-
-  Future<void> setStrictOffline(bool value) async {
-    _strictOffline = value;
-    await Hive.box('vaultx_settings').put('strictOffline', value);
-    _safeNotify();
-  }
-
-  Future<void> recordFailedPinAttempt() async {
-    _failedPinAttempts++;
-    await AuditLog.write('Failed password unlock attempt (PIN/Pass #$_failedPinAttempts)');
-    if (_failedPinAttempts >= 5) {
-      _pinLockedUntil = DateTime.now().add(const Duration(minutes: 15));
-      await Hive.box(
-        'vaultx_settings',
-      ).put('pinLockedUntil', _pinLockedUntil!.toIso8601String());
-      await AuditLog.write('Security escalation: PIN lockout active for 15 minutes');
-    }
-    await Hive.box(
-      'vaultx_settings',
-    ).put('failedPinAttempts', _failedPinAttempts);
-    _safeNotify();
-  }
-
-  Future<void> recordFailedBiometricAttempt() async {
-    _failedBiometricAttempts++;
-    await AuditLog.write('Failed biometric unlock attempt (#$_failedBiometricAttempts)');
-    if (_failedBiometricAttempts >= 5) {
-      await AuditLog.write('Security escalation: Biometric mandatory password required');
-    }
-    await Hive.box('vaultx_settings')
-        .put('failedBiometricAttempts', _failedBiometricAttempts);
-    _safeNotify();
-  }
-
-  Future<void> resetPinAttempts() async {
-    _failedPinAttempts = 0;
-    _pinLockedUntil = null;
-    await Hive.box('vaultx_settings').put('failedPinAttempts', 0);
-    await Hive.box('vaultx_settings').delete('pinLockedUntil');
-    _safeNotify();
-  }
-
-  Future<void> resetBiometricAttempts() async {
-    _failedBiometricAttempts = 0;
-    await Hive.box('vaultx_settings').put('failedBiometricAttempts', 0);
-    _safeNotify();
-  }
-}
 
 /// Root MaterialApp with theme driven by [ThemeProvider].
 class VaultXApp extends StatelessWidget {
@@ -161,18 +89,33 @@ class VaultXApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    String title;
+    try {
+      title =
+          Hive.box('vaultx_settings').get('decoyCalculatorEnabled', defaultValue: false) as bool
+              ? 'Calculator'
+              : 'Notex';
+    } catch (_) {
+      title = 'Notex';
+    }
     return MaterialApp(
-      title:
-          Hive.box(
-                'vaultx_settings',
-              ).get('decoyCalculatorEnabled', defaultValue: false)
-              as bool
-          ? 'Calculator'
-          : 'VaultX',
+      title: title,
       debugShowCheckedModeBanner: false,
       theme: context.watch<ThemeProvider>().themeData,
+      locale: context.watch<LocaleProvider>().locale,
+      localizationsDelegates: const [
+        AppLocalizations.delegate,
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: AppLocalizations.supportedLocales,
       builder: (context, child) =>
-          FloatingNotificationHost(child: child ?? const SizedBox.shrink()),
+          FloatingNotificationHost(
+            child: VaultAuthGuard(
+              child: child ?? const SizedBox.shrink(),
+            ),
+          ),
       home: const VaultBootstrap(),
       onGenerateRoute: (settings) {
         final args = settings.arguments as Map<String, dynamic>? ?? {};
@@ -197,16 +140,24 @@ class VaultXApp extends StatelessWidget {
                 isDecoy: args['isDecoy'] as bool? ?? false,
               ),
             );
+          case NavigationService.routePasswords:
+            return MaterialPageRoute(
+              builder: (_) => PasswordManagerScreen(
+                service: args['service'] as PasswordVaultService,
+              ),
+            );
           case NavigationService.routeSettings:
             return MaterialPageRoute(
-              builder: (_) => SettingsScreen(
-                auth: args['auth'] as VaultAuthService,
-                repo: args['repo'] as VaultRepository?,
-                posture: args['posture'] as Map<String, dynamic>? ?? {},
-                onDataChanged: args['onDataChanged'] as Future<void> Function()? ?? () async {},
-                vaultKind: args['vaultKind'] as VaultKind? ?? VaultKind.main,
-                trashService: args['trashService'] as TrashService?,
-                onGoHome: args['onGoHome'] as VoidCallback?,
+              builder: (_) => Material(
+                child: SettingsScreen(
+                  auth: args['auth'] as VaultAuthService,
+                  repo: args['repo'] as VaultRepository?,
+                  posture: args['posture'] as Map<String, dynamic>? ?? {},
+                  onDataChanged: args['onDataChanged'] as Future<void> Function()? ?? () async {},
+                  vaultKind: args['vaultKind'] as VaultKind? ?? VaultKind.main,
+                  trashService: args['trashService'] as TrashService?,
+                  onGoHome: args['onGoHome'] as VoidCallback?,
+                ),
               ),
             );
           case NavigationService.routeGame:
@@ -239,21 +190,64 @@ class _VaultBootstrapState extends State<VaultBootstrap> {
   }
 
   Future<void> _initAppState() async {
-    final appState = context.read<VaultAppState>();
-    await appState.init();
-    if (mounted) {
-      setState(() => _appStateReady = true);
-      _load();
+    debugPrint('STARTUP: _initAppState entered');
+    try {
+      final appState = context.read<VaultAppState>();
+      debugPrint('STARTUP: about to call appState.init()');
+      await appState.init().timeout(const Duration(seconds: 10));
+      debugPrint('STARTUP: appState.init() completed');
+      if (mounted) {
+        setState(() => _appStateReady = true);
+        debugPrint('STARTUP: _appStateReady set to true, calling _load()');
+        await _load();
+      }
+    } catch (e, st) {
+      debugPrint('STARTUP_ERROR: _initAppState failed: $e');
+      debugPrint('$st');
+      if (mounted) {
+        setState(() {
+          _appStateReady = true;
+          _ready = false;
+        });
+      }
     }
   }
 
-  Future<void> _load() async {
-    // Check Dead Man Switch before deciding which screen to show.
-    // Wipe-only action will make isInitialized() return false -> SetupScreen.
-    await DeadMansService.checkOnLaunch(auth: _auth);
+  void _initSessionManager() {
+    try {
+      final minutes = Hive.box('vaultx_settings').get('lockMinutes', defaultValue: 1) as int;
+      AuthSessionManager.instance.updateLockMinutes(minutes);
+    } catch (_) {}
+  }
 
-    final initialized = await _auth.isInitialized();
-    if (mounted) setState(() => _ready = initialized);
+  Future<void> _load() async {
+    try {
+      debugPrint('STARTUP: _load entered');
+      await DeadMansService.checkOnLaunch(auth: _auth).timeout(
+        const Duration(seconds: 10),
+        onTimeout: () {
+          debugPrint('STARTUP_TIMEOUT: DeadMansService.checkOnLaunch timed out');
+          return DmsCheckResult.none;
+        },
+      );
+      debugPrint('STARTUP: DeadMansService.checkOnLaunch completed');
+
+      _initSessionManager();
+
+      final initialized = await _auth.isInitialized().timeout(
+        const Duration(seconds: 10),
+        onTimeout: () {
+          debugPrint('STARTUP_TIMEOUT: _auth.isInitialized() timed out');
+          return false;
+        },
+      );
+      debugPrint('STARTUP: _auth.isInitialized() = $initialized');
+      if (mounted) setState(() => _ready = initialized);
+    } catch (e, st) {
+      debugPrint('STARTUP_ERROR: _load failed: $e');
+      debugPrint('$st');
+      if (mounted) setState(() => _ready = false);
+    }
   }
 
   @override
@@ -264,15 +258,40 @@ class _VaultBootstrapState extends State<VaultBootstrap> {
     if (!context.watch<VaultAppState>().onboardingComplete) {
       return const OnboardingScreen();
     }
-    final decoyCalculator =
-        Hive.box(
-              'vaultx_settings',
-            ).get('decoyCalculatorEnabled', defaultValue: false)
-            as bool;
+    bool decoyCalculator;
+    try {
+      decoyCalculator =
+          Hive.box('vaultx_settings').get('decoyCalculatorEnabled', defaultValue: false) as bool;
+    } catch (_) {
+      decoyCalculator = false;
+    }
     final isReady = _ready ?? false;
     if (isReady && decoyCalculator) {
       return DecoyCalculatorScreen(auth: _auth);
     }
-    return isReady ? LoginScreen(auth: _auth) : SetupScreen(auth: _auth);
+    // Note: VaultAuthGuard handles showing LoginScreen if not authenticated.
+    // But we still need to know if the vault is ready/initialized.
+    return isReady ? const VaultHomeWrapper() : SetupScreen(auth: _auth);
+  }
+}
+
+class VaultHomeWrapper extends StatelessWidget {
+  const VaultHomeWrapper({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: AuthSessionManager.instance,
+      builder: (context, _) {
+        final session = AuthSessionManager.instance;
+        if (session.isAuthenticated) {
+          return VaultHome(
+            auth: VaultAuthService(),
+            authResult: session.sessionAuth!,
+          );
+        }
+        return LoginScreen(auth: VaultAuthService());
+      },
+    );
   }
 }

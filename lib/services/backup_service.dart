@@ -2239,6 +2239,10 @@ class BackupService {
       }
     }
 
+    if (restored > 0) {
+      await AuditLog.write('PASSWORD_IMPORT_SUCCESS');
+    }
+
     final localCountAfter = box.keys.length;
     _log('RESTORE DEBUG [passwords]: merge complete. final=$localCountAfter, inserted=${restored-updated}, updated=$updated, skipped=$skipped');
 

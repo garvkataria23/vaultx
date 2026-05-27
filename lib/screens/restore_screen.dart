@@ -428,7 +428,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'No VaultX backup was found on your ${widget.driveService.providerName} account.\n\n'
+              'No Notex backup was found on your ${widget.driveService.providerName} account.\n\n'
               'Create a backup from the Settings screen first.',
               textAlign: TextAlign.center,
               style: TextStyle(
@@ -480,7 +480,7 @@ class _RestoreScreenState extends State<RestoreScreen> {
         ),
         const SizedBox(height: 8),
         Text(
-          'An existing VaultX backup was found on your ${widget.driveService.providerName}.',
+          'An existing Notex backup was found on your ${widget.driveService.providerName}.',
           textAlign: TextAlign.center,
           style: TextStyle(
             color: cs.onSurfaceVariant,

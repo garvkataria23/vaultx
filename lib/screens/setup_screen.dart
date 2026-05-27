@@ -51,8 +51,155 @@ class _SetupScreenState extends State<SetupScreen> {
     setState(() => _busy = true);
     await widget.auth.setup(password: _password.text);
     if (!mounted) return;
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => LoginScreen(auth: widget.auth)),
+    _offerRecoveryCodes();
+  }
+
+  Future<void> _offerRecoveryCodes() async {
+    final offer = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Recovery Codes'),
+        content: const Text(
+          'Would you like to generate recovery codes? '
+          'Save them somewhere safe. If you forget your password, '
+          'you can use a code to regain access.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Skip'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Generate Codes'),
+          ),
+        ],
+      ),
+    );
+
+    if (!mounted) return;
+    if (offer != true) {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => LoginScreen(auth: widget.auth)),
+      );
+      return;
+    }
+
+    setState(() => _busy = true);
+    try {
+      final recovery = RecoveryService();
+      final codes = await recovery.generateCodes();
+
+      final password = _password.text;
+      final result = await widget.auth.unlockWithPassword(password);
+      if (!result.ok || result.masterKey == null) {
+        if (mounted) {
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (_) => LoginScreen(auth: widget.auth)),
+          );
+        }
+        return;
+      }
+
+      await recovery.storeCodes(codes, result.masterKey!);
+
+      if (!mounted) return;
+      await _showRecoveryCodes(codes);
+    } catch (_) {}
+
+    if (mounted) {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => LoginScreen(auth: widget.auth)),
+      );
+    }
+  }
+
+  Future<void> _showRecoveryCodes(List<String> codes) async {
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          title: Row(
+            children: [
+              Icon(Icons.warning_amber_rounded,
+                  color: Theme.of(ctx).colorScheme.error),
+              const SizedBox(width: 8),
+              const Expanded(child: Text('Save These Codes')),
+            ],
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Each code can be used ONCE to reset your password. '
+                  'Store them securely — this is the only time they\'ll be shown.',
+                  style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(ctx).colorScheme.error,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Theme.of(ctx).colorScheme.surfaceContainerHighest
+                        .withValues(alpha: 0.5),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: Theme.of(ctx).colorScheme.outlineVariant,
+                    ),
+                  ),
+                  child: Column(
+                    children: codes.map((code) {
+                      final idx = codes.indexOf(code) + 1;
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 28,
+                              child: Text(
+                                '$idx.',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  color: Theme.of(ctx)
+                                      .colorScheme
+                                      .onSurfaceVariant,
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              child: SelectableText(
+                                code,
+                                style: const TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                  letterSpacing: 1,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('I\'ve saved them'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -115,7 +262,7 @@ class _SetupScreenState extends State<SetupScreen> {
         await AuditLog.write('RESTORE_FAILED: No backup found');
         setState(() {
           _busy = false;
-          _error = 'No VaultX backup found in your ${_selectedProvider.displayName}.';
+          _error = 'No Notex backup found in your ${_selectedProvider.displayName}.';
         });
         return;
       }
@@ -239,11 +386,13 @@ class _SetupScreenState extends State<SetupScreen> {
 
       if (restoreResult.success) {
         await AuditLog.write('RESTORE_SUCCESS');
+        if (!mounted) return;
         FloatingNotificationService.instance.show('Vault restored successfully.');
         Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => LoginScreen(auth: widget.auth)));
       } else {
         final errMsg = restoreResult.error ?? 'Unknown restore error';
         await AuditLog.write('RESTORE_FAILED: $errMsg');
+        if (!mounted) return;
         FloatingNotificationService.instance.show('Restore failed: $errMsg', error: true);
         setState(() {
           _busy = false;
@@ -275,7 +424,7 @@ class _SetupScreenState extends State<SetupScreen> {
                 children: [
                   const Icon(Icons.security, size: 56),
                   const SizedBox(height: 16),
-                  Text('VaultX', style: Theme.of(context).textTheme.displaySmall),
+                  Text('Notex', style: Theme.of(context).textTheme.displaySmall),
                   const SizedBox(height: 8),
                   Text('Local-first encrypted notes. No cloud account. No plaintext vault records.', style: Theme.of(context).textTheme.bodyMedium),
                   const SizedBox(height: 14),

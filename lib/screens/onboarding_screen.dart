@@ -29,7 +29,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         icon: Icons.lock,
         title: 'Zero-knowledge vault',
         body:
-            'VaultX stores encrypted notes only on this device. Your master password never leaves the app.',
+            'Notex stores encrypted notes only on this device. Your master password never leaves the app.',
       ),
       const _OnboardingPage(
         icon: Icons.phonelink_lock,

@@ -8,8 +8,9 @@ import 'package:local_auth/local_auth.dart';
 import 'package:open_file/open_file.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:uuid/uuid.dart';
 
-import '../models/models.dart';
+import '../models/note.dart';
 import '../services/services.dart';
 import '../widgets/widgets.dart';
 
@@ -196,6 +197,7 @@ class _NoteEditorState extends State<NoteEditor> {
   late TextEditingController _body;
   late TextEditingController _folder;
   late TextEditingController _tags;
+  late List<TodoTask> _todoList;
 
   late SmartOrganizationService _orgService;
   List<SecureNote> _relatedNotes = [];
@@ -237,6 +239,8 @@ class _NoteEditorState extends State<NoteEditor> {
   bool _hasUnsavedChanges = false;
   bool _isPreviewMode = false;
 
+  final _uuid = const Uuid();
+
   @override
   void initState() {
     super.initState();
@@ -252,6 +256,7 @@ class _NoteEditorState extends State<NoteEditor> {
     _body = TextEditingController(text: _note.body);
     _folder = TextEditingController(text: _note.folder);
     _tags = TextEditingController(text: _note.tags.join(', '));
+    _todoList = List<TodoTask>.from(_note.todoList);
     _ocrText.text = _note.ocrText;
 
     _orgService = SmartOrganizationService(widget.allNotes);
@@ -289,10 +294,14 @@ class _NoteEditorState extends State<NoteEditor> {
                        _body.text != _note.body ||
                        _folder.text != _note.folder ||
                        _tags.text != _note.tags.join(', ') ||
+                       _todoList.length != _note.todoList.length ||
                        _ocrText.text != _note.ocrText;
                        
     if (isDifferent && !_hasUnsavedChanges) {
       setState(() => _hasUnsavedChanges = true);
+      if (_note.type == NoteType.todo) {
+        AuditLog.write('TODO_PROGRESS_UPDATED: ${_todoList.where((t) => t.done).length}/${_todoList.length}');
+      }
     }
     
     _scanSensitiveText();
@@ -342,6 +351,7 @@ class _NoteEditorState extends State<NoteEditor> {
             .map((e) => e.trim())
             .where((e) => e.isNotEmpty)
             .toList(),
+        todoList: _todoList,
         ocrText: _ocrText.text,
         lastOpenedAt: DateTime.now(), // Ensure note opening/editing updates history
       );
@@ -907,6 +917,236 @@ class _NoteEditorState extends State<NoteEditor> {
     );
   }
 
+  Widget _buildTodoEditor() {
+    final cs = Theme.of(context).colorScheme;
+    final total = _todoList.length;
+    final completedCount = _todoList.where((t) => t.done).length;
+    final progress = total == 0 ? 0.0 : completedCount / total;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Card(
+          elevation: 0,
+          color: cs.surfaceContainerHigh,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Progress',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        Text(
+                          '$completedCount/$total completed',
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: cs.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Text(
+                      '${(progress * 100).toInt()}%',
+                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: cs.primary,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: LinearProgressIndicator(
+                    value: progress,
+                    minHeight: 8,
+                    backgroundColor: cs.surfaceContainerHighest,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        TextField(
+          controller: _body,
+          maxLines: 2,
+          decoration: const InputDecoration(
+            labelText: 'Description (optional)',
+            border: OutlineInputBorder(),
+          ),
+          onChanged: (_) => _onContentChanged(),
+        ),
+        const SizedBox(height: 16),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('Tasks', style: Theme.of(context).textTheme.titleMedium),
+            TextButton.icon(
+              onPressed: () => _showAddTaskDialog(),
+              icon: const Icon(Icons.add),
+              label: const Text('Add Task'),
+            ),
+          ],
+        ),
+        if (_todoList.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 40),
+            child: Column(
+              children: [
+                Icon(Icons.playlist_add_check, size: 48, color: cs.outline),
+                const SizedBox(height: 16),
+                Text(
+                  'No tasks yet. Add one to get started!',
+                  style: TextStyle(color: cs.onSurfaceVariant),
+                ),
+              ],
+            ),
+          )
+        else ...[
+          ReorderableListView(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            onReorder: (oldIndex, newIndex) {
+              setState(() {
+                if (newIndex > oldIndex) newIndex -= 1;
+                final item = _todoList.removeAt(oldIndex);
+                _todoList.insert(newIndex, item);
+              });
+              _onContentChanged();
+            },
+            children: [
+              for (int i = 0; i < _todoList.length; i++)
+                _TodoTaskTile(
+                  key: ValueKey(_todoList[i].id),
+                  task: _todoList[i],
+                  onToggle: (v) {
+                    setState(() {
+                      _todoList[i] = _todoList[i].copyWith(done: v);
+                    });
+                    AuditLog.write('TODO_COMPLETED: ${_todoList[i].text} ($v)');
+                    _onContentChanged();
+                  },
+                  onDelete: () {
+                    setState(() => _todoList.removeAt(i));
+                    AuditLog.write('TODO_DELETED at index $i');
+                    _onContentChanged();
+                  },
+                  onEdit: () => _showAddTaskDialog(task: _todoList[i], index: i),
+                ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  void _showAddTaskDialog({TodoTask? task, int? index}) {
+    final titleController = TextEditingController(text: task?.text ?? '');
+    TodoPriority priority = task?.priority ?? TodoPriority.medium;
+    DateTime? dueDate = task?.dueDate;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModalState) => Padding(
+          padding: EdgeInsets.fromLTRB(20, 20, 20, MediaQuery.of(ctx).viewInsets.bottom + 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                task == null ? 'New Task' : 'Edit Task',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: titleController,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'Task name',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: DropdownButtonFormField<TodoPriority>(
+                      initialValue: priority,
+                      decoration: const InputDecoration(labelText: 'Priority'),
+                      items: TodoPriority.values.map((p) => DropdownMenuItem(
+                        value: p,
+                        child: Text(p.name.toUpperCase()),
+                      )).toList(),
+                      onChanged: (v) => setModalState(() => priority = v!),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  IconButton.filledTonal(
+                    onPressed: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: dueDate ?? DateTime.now(),
+                        firstDate: DateTime.now().subtract(const Duration(days: 365)),
+                        lastDate: DateTime.now().add(const Duration(days: 365 * 5)),
+                      );
+                      if (picked != null) setModalState(() => dueDate = picked);
+                    },
+                    icon: Icon(dueDate == null ? Icons.calendar_today : Icons.event_available),
+                    tooltip: 'Set due date',
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              if (dueDate != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 16),
+                  child: Chip(
+                    label: Text('Due: ${dueDate!.toString().split(' ')[0]}'),
+                    onDeleted: () => setModalState(() => dueDate = null),
+                  ),
+                ),
+              FilledButton(
+                onPressed: () {
+                  if (titleController.text.trim().isEmpty) return;
+                  final newTask = TodoTask(
+                    id: task?.id ?? _uuid.v4(),
+                    text: titleController.text.trim(),
+                    priority: priority,
+                    dueDate: dueDate,
+                    done: task?.done ?? false,
+                  );
+                  setState(() {
+                    if (index == null) {
+                      _todoList.insert(0, newTask);
+                      AuditLog.write('TODO_CREATED: ${newTask.text}');
+                    } else {
+                      _todoList[index] = newTask;
+                      AuditLog.write('TODO_EDITED: ${newTask.text}');
+                    }
+                  });
+                  _onContentChanged();
+                  Navigator.pop(context);
+                },
+                child: Text(task == null ? 'Create' : 'Save'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // ✅ Show lock screen until authenticated
@@ -1168,11 +1408,12 @@ class _NoteEditorState extends State<NoteEditor> {
                   ),
                 ],
               ),
-            ),
-          const SizedBox(height: 12),
-          if (_isPreviewMode)
-            Container(
-              padding: const EdgeInsets.all(12),
+              ),
+              const SizedBox(height: 12),
+              if (_note.type == NoteType.todo)
+              _buildTodoEditor()
+              else if (_isPreviewMode)
+              Container(              padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
                 borderRadius: BorderRadius.circular(12),
@@ -1789,6 +2030,100 @@ class _ExpiryChip extends StatelessWidget {
     if (time == null || !context.mounted) return;
 
     onChange(DateTime(date.year, date.month, date.day, time.hour, time.minute));
+  }
+}
+
+class _TodoTaskTile extends StatelessWidget {
+  const _TodoTaskTile({
+    super.key,
+    required this.task,
+    required this.onToggle,
+    required this.onDelete,
+    required this.onEdit,
+  });
+  final TodoTask task;
+  final ValueChanged<bool> onToggle;
+  final VoidCallback onDelete;
+  final VoidCallback onEdit;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final priorityColor = switch (task.priority) {
+      TodoPriority.high => Colors.red,
+      TodoPriority.medium => Colors.orange,
+      TodoPriority.low => Colors.blue,
+    };
+
+    return Dismissible(
+      key: key!,
+      direction: DismissDirection.endToStart,
+      background: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 20),
+        color: cs.error,
+        child: const Icon(Icons.delete, color: Colors.white),
+      ),
+      onDismissed: (_) => onDelete(),
+      child: Card(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.5)),
+        ),
+        child: InkWell(
+          onTap: onEdit,
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Row(
+              children: [
+                ReorderableDragStartListener(
+                  index: 0, // Not used directly but required for the widget
+                  child: Icon(Icons.drag_indicator, color: cs.outline, size: 20),
+                ),
+                const SizedBox(width: 4),
+                Checkbox(
+                  value: task.done,
+                  onChanged: (v) => onToggle(v ?? false),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        task.text,
+                        style: TextStyle(
+                          decoration: task.done ? TextDecoration.lineThrough : null,
+                          color: task.done ? cs.onSurfaceVariant : null,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      if (task.dueDate != null)
+                        Text(
+                          'Due: ${task.dueDate!.toString().split(' ')[0]}',
+                          style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+                        ),
+                    ],
+                  ),
+                ),
+                Container(
+                  width: 4,
+                  height: 24,
+                  decoration: BoxDecoration(
+                    color: priorityColor,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

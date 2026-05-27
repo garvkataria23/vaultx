@@ -7,6 +7,7 @@ class NavigationService {
   static const String routeHome = '/home';
   static const String routeDrive = '/drive';
   static const String routeSecurity = '/security';
+  static const String routePasswords = '/passwords';
   static const String routeSettings = '/settings';
   static const String routeGame = '/game';
 

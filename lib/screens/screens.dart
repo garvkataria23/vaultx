@@ -5,6 +5,7 @@ export 'onboarding_screen.dart' show OnboardingScreen;
 export 'restore_screen.dart' show RestoreScreen;
 export 'setup_screen.dart' show SetupScreen;
 export 'login_screen.dart' show LoginScreen;
+export 'language_picker_screen.dart' show LanguagePickerScreen;
 export 'vault_home.dart' show VaultHome;
 export 'note_editor.dart' show NoteEditor;
 export 'settings_screen.dart' show SettingsScreen;

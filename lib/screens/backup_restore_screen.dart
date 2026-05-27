@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -962,20 +960,28 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             const ListTile(title: Text('Backup Interval', style: TextStyle(fontWeight: FontWeight.bold))),
-            ListTile(
-              title: const Text('Daily'),
-              leading: Radio<String>(value: 'daily', groupValue: _backupInterval, onChanged: (v) => Navigator.pop(ctx, v)),
-              onTap: () => Navigator.pop(ctx, 'daily'),
-            ),
-            ListTile(
-              title: const Text('Weekly'),
-              leading: Radio<String>(value: 'weekly', groupValue: _backupInterval, onChanged: (v) => Navigator.pop(ctx, v)),
-              onTap: () => Navigator.pop(ctx, 'weekly'),
-            ),
-            ListTile(
-              title: const Text('Manual Only'),
-              leading: Radio<String>(value: 'manual', groupValue: _backupInterval, onChanged: (v) => Navigator.pop(ctx, v)),
-              onTap: () => Navigator.pop(ctx, 'manual'),
+            RadioGroup<String>(
+              groupValue: _backupInterval,
+              onChanged: (v) {
+                Navigator.pop(ctx, v);
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  RadioListTile<String>(
+                    title: const Text('Daily'),
+                    value: 'daily',
+                  ),
+                  RadioListTile<String>(
+                    title: const Text('Weekly'),
+                    value: 'weekly',
+                  ),
+                  RadioListTile<String>(
+                    title: const Text('Manual Only'),
+                    value: 'manual',
+                  ),
+                ],
+              ),
             ),
           ],
         ),

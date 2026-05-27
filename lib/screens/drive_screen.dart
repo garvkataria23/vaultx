@@ -256,6 +256,7 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
 
     final authenticated = await _authenticateForAction('Bulk $action');
     if (!authenticated) return;
+    if (!mounted) return;
 
     switch (action) {
       case 'delete':
@@ -1223,39 +1224,97 @@ class _DriveScreenState extends State<DriveScreen> with AutomaticKeepAliveClient
     );
   }
 
+  Widget _buildEmptyDrive(ColorScheme cs) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.folder_open,
+            size: 64,
+            color: cs.onSurface.withValues(alpha: 0.3),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'No files stored yet',
+            style: TextStyle(color: cs.onSurface.withValues(alpha: 0.5)),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Import files to see them organized by category',
+            style: TextStyle(
+              color: cs.onSurface.withValues(alpha: 0.35),
+              fontSize: 13,
+            ),
+          ),
+          const SizedBox(height: 24),
+          FilledButton.tonalIcon(
+            onPressed: _importFile,
+            icon: const Icon(Icons.add),
+            label: const Text('Import file'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyWithPasswords(ColorScheme cs) {
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          _buildDriveHealthCard(cs),
+          const SizedBox(height: 24),
+          Text(
+            '0 files stored',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: cs.onSurface.withValues(alpha: 0.5),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _buildPasswordFolderEntry(cs),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPasswordFolderEntry(ColorScheme cs) {
+    final isUnlocked = _sessionUnlockedFolders.contains('Passwords');
+    return SwipeActionTile(
+      isArchived: false,
+      onAction: (_) {},
+      child: Card(
+        child: ListTile(
+          leading: Text(isUnlocked ? '🔓' : '🔒', style: const TextStyle(fontSize: 24)),
+          title: const Text('Passwords'),
+          subtitle: Text(isUnlocked ? 'Unlocked' : 'Tap to unlock'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () async {
+            if (!isUnlocked) {
+              if (!await _unlockFolder('Passwords')) return;
+            }
+            if (!mounted) return;
+            // ignore: use_build_context_synchronously
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => PasswordManagerScreen(
+                  service: widget.passwordVault!,
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
   Widget _buildFolderGrid(ColorScheme cs) {
     if (_files.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.folder_open,
-              size: 64,
-              color: cs.onSurface.withValues(alpha: 0.3),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'No files stored yet',
-              style: TextStyle(color: cs.onSurface.withValues(alpha: 0.5)),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Import files to see them organized by category',
-              style: TextStyle(
-                color: cs.onSurface.withValues(alpha: 0.35),
-                fontSize: 13,
-              ),
-            ),
-            const SizedBox(height: 24),
-            FilledButton.tonalIcon(
-              onPressed: _importFile,
-              icon: const Icon(Icons.add),
-              label: const Text('Import file'),
-            ),
-          ],
-        ),
-      );
+      if (widget.passwordVault != null && !widget.isDecoy) {
+        return _buildEmptyWithPasswords(cs);
+      }
+      return _buildEmptyDrive(cs);
     }
 
     final accessibleFiles = _files.where((f) => _isFolderAccessible(f.folder)).toList();

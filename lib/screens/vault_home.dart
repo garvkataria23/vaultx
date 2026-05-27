@@ -2,16 +2,17 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:vaultx/l10n/app_localizations.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:provider/provider.dart';
 
 import '../models/models.dart';
 import '../services/services.dart';
+import '../services/auth_session_manager.dart';
 import '../widgets/widgets.dart';
 import '../widgets/note_views_renderer.dart';
 import 'archive_screen.dart';
 import 'drive_screen.dart';
-import 'login_screen.dart';
 import 'note_editor.dart';
 import 'settings_screen.dart';
 import 'decoy_calculator_screen.dart';
@@ -95,8 +96,8 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
         widget.authResult.masterKey!,
         widget.authResult.kind,
       );
-      _itemActions = ItemActionService(
-        repo: _repo!,
+      context.read<PasswordManagerProvider>().initialize(_passwordVault!);
+      _itemActions = ItemActionService(        repo: _repo!,
         drive: _drive!,
         masterKey: widget.authResult.masterKey!,
       );
@@ -106,8 +107,8 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
         passwords: _passwordVault!,
         vaultKind: widget.authResult.kind,
       );
-      _trash!.autoCleanup();
-      BrowserExtensionService.instance.start(_passwordVault!);
+      Future.microtask(() => _trash!.autoCleanup());
+      Future.microtask(() => BrowserExtensionService.instance.start(_passwordVault!));
     }
     DeadMansService.resetTimer();
     _load();
@@ -173,17 +174,18 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
   }
 
   Future<void> _load() async {
+    StartupDiagnostics.instance.markNotesLoaded();
     if (widget.authResult.kind == VaultKind.decoy) {
       final notes = await DecoySeedService.loadNotes();
       if (mounted) {
         setState(() {
           _notes = notes;
           _cachedFolders = ['All', ...{for (final n in notes) n.folder}];
-          _computeCategories();
-          _searchSuggestions = _searchService.getSuggestions(_notes);
-          _archivedCount = notes.where((n) => n.archived).length;
           _folderMetadata = {};
         });
+        _computeCategoriesAsync(notes);
+        _buildSearchSuggestionsAsync(notes);
+        _archivedCount = notes.where((n) => n.archived).length;
         _runSearch();
       }
       return;
@@ -195,22 +197,47 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
       setState(() {
         _notes = notes;
         _cachedFolders = ['All', ...{for (final n in notes) n.folder}];
-        _computeCategories();
-        _searchSuggestions = _searchService.getSuggestions(_notes);
-        _archivedCount = notes.where((n) => n.archived).length;
         _folderMetadata = { for (final f in metadata) f.name : f };
       });
+      _computeCategoriesAsync(notes);
+      _buildSearchSuggestionsAsync(notes);
+      _archivedCount = notes.where((n) => n.archived).length;
       if (_passwordVault != null) {
-        _passwordVault!.archivedCount().then((c) {
-          if (mounted) setState(() => _archivedCount += c);
-        });
+        _loadArchivedCountAsync();
       }
       _runSearch();
       
       if (_blobs != null) {
-        SmartOcrScanner.start(_repo!, _blobs!);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          SmartOcrScanner.start(_repo!, _blobs!);
+          StartupDiagnostics.instance.markAiReady();
+        });
       }
     }
+    StartupDiagnostics.instance.markFirstFrame();
+    StartupDiagnostics.instance.report();
+  }
+
+  void _computeCategoriesAsync(List<SecureNote> notes) {
+    Future.microtask(() {
+      if (!mounted) return;
+      _computeCategories();
+    });
+  }
+
+  void _buildSearchSuggestionsAsync(List<SecureNote> notes) {
+    Future.microtask(() {
+      if (!mounted) return;
+      final suggestions = _searchService.getSuggestions(notes);
+      setState(() => _searchSuggestions = suggestions);
+    });
+  }
+
+  void _loadArchivedCountAsync() {
+    _passwordVault!.archivedCount().then((c) {
+      if (mounted) setState(() => _archivedCount += c);
+      StartupDiagnostics.instance.markPasswordsLoaded();
+    });
   }
 
   void _computeCategories() {
@@ -422,11 +449,9 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
     HapticFeedback.heavyImpact();
     ClipboardGuard.clearNow();
     FloatingNotificationService.instance.clear();
-    _wipeSessionKey();
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => LoginScreen(auth: widget.auth)),
-      (_) => false,
-    );
+    AuthSessionManager.instance.lock();
+    // Key cleanup happens in dispose() via _wipeSessionKey
+    Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
   Future<void> _switchVault(VaultKind target) async {
@@ -701,6 +726,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final folders = _cachedFolders;
     final isSelectionMode = _selectedIds.isNotEmpty;
+    final l10n = AppLocalizations.of(context)!;
 
     return PopScope(
       canPop: _index == 0 && !isSelectionMode,
@@ -862,26 +888,26 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
           bottomNavigationBar: NavigationBar(
             selectedIndex: _index,
             onDestinationSelected: _onDestinationSelected,
-            destinations: const [
+            destinations: [
               NavigationDestination(
-                icon: Icon(Icons.dashboard_outlined),
-                selectedIcon: Icon(Icons.dashboard),
-                label: 'Home',
+                icon: const Icon(Icons.dashboard_outlined),
+                selectedIcon: const Icon(Icons.dashboard),
+                label: l10n.home,
               ),
               NavigationDestination(
-                icon: Icon(Icons.folder_outlined),
-                selectedIcon: Icon(Icons.folder),
-                label: 'Drive',
+                icon: const Icon(Icons.folder_outlined),
+                selectedIcon: const Icon(Icons.folder),
+                label: l10n.drive,
               ),
               NavigationDestination(
-                icon: Icon(Icons.shield_outlined),
-                selectedIcon: Icon(Icons.shield),
-                label: 'Security',
+                icon: const Icon(Icons.shield_outlined),
+                selectedIcon: const Icon(Icons.shield),
+                label: l10n.security,
               ),
               NavigationDestination(
-                icon: Icon(Icons.sports_esports_outlined),
-                selectedIcon: Icon(Icons.sports_esports),
-                label: 'VaultX Game',
+                icon: const Icon(Icons.sports_esports_outlined),
+                selectedIcon: const Icon(Icons.sports_esports),
+                label: l10n.game,
               ),
             ],
           ),
@@ -892,6 +918,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
 
   Widget _buildNotesTab(List<String> folders) {
     final filtered = _filteredNotes;
+    final l10n = AppLocalizations.of(context)!;
     return Column(
       children: [
         Padding(
@@ -1024,7 +1051,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
                 child: _buildDashboardTile(
                   context,
                   icon: Icons.archive_outlined,
-                  label: 'Archived',
+                  label: l10n.archive,
                   count: _archivedCount,
                   onTap: () async {
                     if (widget.authResult.kind == VaultKind.decoy ||
@@ -1050,7 +1077,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
                 child: _buildDashboardTile(
                   context,
                   icon: Icons.auto_awesome_rounded,
-                  label: 'Smart AI',
+                  label: l10n.smartAi,
                   onTap: () {
                     if (widget.authResult.kind == VaultKind.decoy) {
                       _showDecoyInfo('Smart AI');
@@ -1265,16 +1292,17 @@ class _VaultSwitcher extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final l10n = AppLocalizations.of(context)!;
 
     if (!hasHidden && currentKind != VaultKind.hidden && currentKind != VaultKind.decoy) {
-      return const Text('VaultX');
+      return const Text('Notex');
     }
 
     if (currentKind == VaultKind.decoy) {
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Text('Notes'),
+          Text(l10n.notes),
           const SizedBox(width: 8),
           TextButton(
             onPressed: () => onSwitch(VaultKind.main),
@@ -1282,7 +1310,7 @@ class _VaultSwitcher extends StatelessWidget {
               visualDensity: VisualDensity.compact,
               foregroundColor: cs.primary,
             ),
-            child: const Text('Unlock Main'),
+            child: Text(l10n.unlockMain),
           ),
         ],
       );
@@ -1290,22 +1318,22 @@ class _VaultSwitcher extends StatelessWidget {
 
     return SegmentedButton<VaultKind>(
       segments: [
-        const ButtonSegment(
+        ButtonSegment(
           value: VaultKind.main,
           label: Padding(
-            padding: EdgeInsets.symmetric(horizontal: 4),
-            child: Text('Main'),
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Text(l10n.mainVault),
           ),
-          icon: Icon(Icons.lock_outline, size: 16),
+          icon: const Icon(Icons.lock_outline, size: 16),
         ),
         if (hasHidden || currentKind == VaultKind.hidden)
-          const ButtonSegment(
+          ButtonSegment(
             value: VaultKind.hidden,
             label: Padding(
-              padding: EdgeInsets.symmetric(horizontal: 4),
-              child: Text('Hidden'),
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Text(l10n.hiddenVault),
             ),
-            icon: Icon(Icons.visibility_off_outlined, size: 16),
+            icon: const Icon(Icons.visibility_off_outlined, size: 16),
           ),
       ],
       selected: {currentKind},

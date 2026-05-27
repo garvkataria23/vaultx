@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>VaultX Connect</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; width: 300px; margin: 0; padding: 16px; background-color: #fafafa; }
+        .card { background: white; padding: 16px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); margin-bottom: 16px; }
+        h3 { margin: 0 0 16px 0; font-size: 16px; color: #111; }
+        label { font-size: 12px; color: #555; display: block; margin-bottom: 4px; }
+        input { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #ddd; border-radius: 6px; margin-bottom: 12px; font-size: 14px; }
+        button { width: 100%; padding: 10px; background: #0066ff; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; }
+        button:hover { background: #005ce6; }
+        .danger { background: #e53935; }
+        .danger:hover { background: #d32f2f; }
+        #status { font-size: 13px; font-weight: 500; text-align: center; margin-bottom: 16px; }
+        .connected { color: #43a047; }
+        .disconnected { color: #e53935; }
+    </style>
+</head>
+<body>
+    <div id="status" class="disconnected">Checking status...</div>
+    
+    <div id="pair-section" class="card" style="display: none;">
+        <h3>Connect to VaultX</h3>
+        <label>IP Address</label>
+        <input type="text" id="ip" value="127.0.0.1">
+        <label>Port</label>
+        <input type="text" id="port" value="8080">
+        <label>Pairing PIN</label>
+        <input type="password" id="pin" placeholder="Enter PIN from VaultX App">
+        <button id="btn-pair">Pair Device</button>
+        <div id="pair-error" style="color: red; font-size: 12px; margin-top: 8px;"></div>
+    </div>
+
+    <div id="connected-section" class="card" style="display: none;">
+        <h3>VaultX is Connected</h3>
+        <p style="font-size: 13px; color: #666; margin-bottom: 16px;">
+            Autofill is active. It will automatically detect login forms on supported websites.
+        </p>
+        <button id="btn-disconnect" class="danger">Disconnect</button>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+</html>

@@ -1,19 +1,21 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:vaultx/l10n/app_localizations.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:provider/provider.dart';
 
 import '../models/models.dart';
+import '../services/auth_session_manager.dart';
 import '../services/services.dart';
 import '../services/secure_delete_service.dart';
 import '../theme/custom_theme_creator_screen.dart';
 import '../theme/theme_picker.dart';
 import '../widgets/widgets.dart';
 import 'backup_restore_screen.dart';
+import 'language_picker_screen.dart';
 import 'privacy_policy_screen.dart';
 import 'setup_screen.dart';
 import 'trash_screen.dart';
-import 'login_screen.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Dead Man Switch guard
@@ -393,7 +395,7 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('If you do not open VaultX within the chosen period, the configured action will be executed.'),
+              const Text('If you do not open Notex within the chosen period, the configured action will be executed.'),
               const SizedBox(height: 16),
               Wrap(
                 spacing: 8,
@@ -479,14 +481,26 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
     super.build(context);
     final appState = context.read<VaultAppState>();
     final lastBackup = _getLatestBackup();
+    final l10n = AppLocalizations.of(context)!;
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        Text('Security center', style: Theme.of(context).textTheme.headlineSmall),
+        Text(l10n.securitySettings, style: Theme.of(context).textTheme.headlineSmall),
         const SizedBox(height: 8),
         SecurityDashboard(posture: widget.posture, failedPinAttempts: appState.failedPinAttempts, lockMinutes: _lockMinutes, lastBackupAt: lastBackup),
         const SizedBox(height: 16),
+
+        ListTile(
+          leading: Icon(Icons.language, color: Theme.of(context).colorScheme.primary),
+          title: Text(l10n.language),
+          subtitle: Text(l10n.selectLanguage),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const LanguagePickerScreen()),
+          ),
+        ),
+        const Divider(height: 32),
 
         if (widget.onSwitchVault != null && widget.vaultKind != VaultKind.hidden)
           Padding(
@@ -553,14 +567,10 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
               builder: (_) => _ChangePasswordDialog(auth: widget.auth),
             );
             
-            if (success == true && mounted) {
+            if (success == true && context.mounted) {
               _notify('Password changed successfully');
-              // Force relock for security
-              Navigator.pushAndRemoveUntil(
-                context,
-                MaterialPageRoute(builder: (_) => LoginScreen(auth: widget.auth)),
-                (_) => false,
-              );
+              AuthSessionManager.instance.lock();
+              Navigator.popUntil(context, (route) => route.isFirst);
             }
           },
         ),
@@ -578,7 +588,7 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
               return;
             }
             final authenticated = await _authenticateForAction('Authenticate Backup & Restore');
-            if (!authenticated || !mounted) return;
+            if (!authenticated || !context.mounted) return;
             final result = await Navigator.of(context).push(MaterialPageRoute(builder: (_) => BackupRestoreScreen(masterKey: widget.repo!.masterKey, kind: widget.repo!.kind, authService: widget.auth, repo: widget.repo, onDataChanged: widget.onDataChanged)));
             if (result == 'view' && mounted) {
               widget.onGoHome?.call();
@@ -721,10 +731,55 @@ class _DeleteProgressOverlay extends StatelessWidget {
 }
 
 class _BiometricSection extends StatelessWidget {
-  const _BiometricSection({required this.auth, required this.enabled, required this.hardwareAvailable, required this.enrolled, required this.biometricType, required this.onToggle});
-  final VaultAuthService auth; final bool enabled; final bool hardwareAvailable; final bool enrolled; final String biometricType; final ValueChanged<bool> onToggle;
+  const _BiometricSection({
+    required this.auth,
+    required this.enabled,
+    required this.hardwareAvailable,
+    required this.enrolled,
+    required this.biometricType,
+    required this.onToggle,
+  });
+
+  final VaultAuthService auth;
+  final bool enabled;
+  final bool hardwareAvailable;
+  final bool enrolled;
+  final String biometricType;
+  final ValueChanged<bool> onToggle;
+
   @override
-  Widget build(BuildContext context) { final available = hardwareAvailable && enrolled; return Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('Biometric Authentication', style: TextStyle(fontWeight: FontWeight.bold)), SwitchListTile(value: enabled, onChanged: available ? onToggle : null, title: Text('Enable $biometricType'))]))); }
+  Widget build(BuildContext context) {
+    // Enable if device supports secure lock (Biometric, PIN, or Pattern)
+    final canEnable = hardwareAvailable;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Device Security',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            SwitchListTile(
+              value: enabled,
+              onChanged: canEnable ? onToggle : null,
+              title: Text('Unlock with $biometricType'),
+              subtitle: Text(
+                !hardwareAvailable
+                    ? 'Secure lock not supported on this device'
+                    : enabled
+                        ? 'Using device security to protect your vault'
+                        : 'Use biometrics or device PIN for faster access',
+                style: const TextStyle(fontSize: 12),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _DeadMansEmailDialog extends StatefulWidget {

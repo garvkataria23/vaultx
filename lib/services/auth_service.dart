@@ -147,10 +147,11 @@ class VaultAuthService {
 
   Future<String> biometricTypeLabel() async {
     final types = await getAvailableBiometrics();
+    if (types.length > 1) return 'Biometrics';
     if (types.contains(BiometricType.face)) return 'Face Unlock';
-    if (types.contains(BiometricType.strong)) return 'Biometrics';
     if (types.contains(BiometricType.fingerprint)) return 'Fingerprint';
     if (types.contains(BiometricType.iris)) return 'Iris';
+    if (types.contains(BiometricType.strong)) return 'Biometrics';
     return 'Device Biometrics';
   }
 
@@ -158,8 +159,8 @@ class VaultAuthService {
     final types = await getAvailableBiometrics();
     if (types.contains(BiometricType.face)) return Icons.face;
     if (types.contains(BiometricType.iris)) return Icons.visibility;
-    if (types.contains(BiometricType.strong) ||
-        types.contains(BiometricType.fingerprint)) {
+    if (types.contains(BiometricType.fingerprint) ||
+        types.contains(BiometricType.strong)) {
       return Icons.fingerprint;
     }
     return Icons.security;
@@ -176,10 +177,9 @@ class VaultAuthService {
         await _localAuth.canCheckBiometrics ||
         await _localAuth.isDeviceSupported();
     if (!hasHardware) return false;
-    final types = await _localAuth.getAvailableBiometrics();
-    if (types.isEmpty) return false;
-    final wrapped = await _readSecure('wrappedMaster.androidKeystore');
-    return wrapped != null;
+    // Allow PIN/Pattern fallback even if no biometrics are enrolled,
+    // as long as the device supports secure lock.
+    return (await _readSecure('wrappedMaster.androidKeystore')) != null;
   }
 
   /// Enables biometric unlock by wrapping the master key in Android Keystore
@@ -223,7 +223,7 @@ class VaultAuthService {
     final authenticated = await authenticateBiometric();
     if (!authenticated) {
       return AuthResult.failure(
-        'Biometric authentication was cancelled or failed',
+        'Authentication was cancelled or failed',
       );
     }
 
@@ -281,6 +281,36 @@ class VaultAuthService {
     await AuditLog.write('Decoy password updated');
   }
 
+  /// Re-wraps an already-verified master key with a new password.
+  /// Used by biometric/reset flows where the master key was obtained
+  /// without knowing the current password.
+  Future<bool> changeMasterPasswordWithKey({
+    required Uint8List masterKey,
+    required String newPassword,
+  }) async {
+    await AuditLog.write('PASSWORD_CHANGE_WITH_KEY_STARTED');
+    final oldSalt = await _readSecure('passwordSalt');
+    final oldWrapped = await _readSecure('wrappedMaster.password');
+
+    try {
+      final newSalt = base64Encode(_crypto.randomBytes(16));
+      final newPasswordKey = await _crypto.deriveCredentialKey(newPassword, newSalt);
+      final newWrapped = jsonEncode(
+        _crypto.encryptJson({'k': base64Encode(masterKey)}, newPasswordKey),
+      );
+      await _writeSecure('passwordSalt', newSalt);
+      await _writeSecure('wrappedMaster.password', newWrapped);
+      _crypto.wipe(newPasswordKey);
+      await AuditLog.write('PASSWORD_CHANGED');
+      return true;
+    } catch (e) {
+      if (oldSalt != null) await _writeSecure('passwordSalt', oldSalt);
+      if (oldWrapped != null) await _writeSecure('wrappedMaster.password', oldWrapped);
+      await AuditLog.write('PASSWORD_CHANGE_FAILED: $e');
+      return false;
+    }
+  }
+
   /// Re-wraps the existing master key with a new password-derived key.
   /// Does NOT change the master key itself, so vault data remains compatible.
   Future<bool> changeMasterPassword({
@@ -288,7 +318,9 @@ class VaultAuthService {
     required String newPassword,
   }) async {
     // 1. Verify current password and get master key
-    final authResult = await unlockWithPassword(currentPassword);
+    final authResult = await verify(
+      await unlockWithPassword(currentPassword),
+    );
     if (!authResult.ok || authResult.masterKey == null) {
       await AuditLog.write('PASSWORD_VERIFY_FAILED');
       return false;
@@ -388,18 +420,13 @@ class VaultAuthService {
 
   Future<bool> authenticateBiometric() async {
     final label = await biometricTypeLabel();
-    final types = await getAvailableBiometrics();
-    final hasFace = types.contains(BiometricType.face);
 
     return _localAuth.authenticate(
       localizedReason: 'Authenticate with $label to unlock VaultX',
-      options: AuthenticationOptions(
-        // Allow non-strong biometrics if Face Unlock is available to support
-        // Class 2 (Weak) implementations common on many Android devices.
-        // This change ensures Face Unlock is prioritized and active if enrolled.
-        // It also enables device PIN/Pattern fallback within the system dialog.
-        biometricOnly: !hasFace,
+      options: const AuthenticationOptions(
         stickyAuth: true,
+        biometricOnly: false,
+        useErrorDialogs: true,
       ),
     );
   }

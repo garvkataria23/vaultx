@@ -1,14 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
-import 'package:vaultx/models/backup.dart';
 import 'package:vaultx/models/models.dart';
 import 'package:vaultx/services/services.dart';
-import 'package:crypto/crypto.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -20,13 +17,15 @@ void main() {
     tempDir = await Directory.systemTemp.createTemp('vaultx_test_merge');
     
     // Mock path_provider
-    const MethodChannel('plugins.flutter.io/path_provider')
-        .setMockMethodCallHandler((MethodCall methodCall) async {
-      if (methodCall.method == 'getApplicationDocumentsDirectory') {
-        return tempDir.path;
-      }
-      return null;
-    });
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('plugins.flutter.io/path_provider'),
+      (MethodCall methodCall) async {
+        if (methodCall.method == 'getApplicationDocumentsDirectory') {
+          return tempDir.path;
+        }
+        return null;
+      },
+    );
 
     Hive.init(tempDir.path);
     await Hive.openBox('vaultx_records');
@@ -55,7 +54,7 @@ void main() {
       createdAt: DateTime.now(),
       updatedAt: DateTime.now(),
     );
-    final salt = 'salt_$id';
+    final salt = base64Encode(utf8.encode('salt_$id'));
     final recordKey = crypto.deriveRecordKey(key, id, salt);
     final payload = crypto.encryptJson(note.toJson(), recordKey);
     crypto.wipe(recordKey);

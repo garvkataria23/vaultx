@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/services.dart';
 import '../widgets/note_views_renderer.dart';
-import 'note_editor.dart';
 
 enum SmartCategory {
   recent('Recent Notes', Icons.history, 'Recently updated or viewed'),
@@ -261,23 +260,4 @@ class _SmartViewScreenState extends State<SmartViewScreen> {
     );
   }
 
-  Widget _buildEmptyState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            _selectedCategory?.icon ?? Icons.auto_awesome,
-            size: 64,
-            color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'No ${_selectedCategory?.label.toLowerCase() ?? "notes"} found',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-        ],
-      ),
-    );
-  }
 }

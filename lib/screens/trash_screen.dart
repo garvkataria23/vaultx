@@ -121,20 +121,6 @@ class _TrashScreenState extends State<TrashScreen> {
     });
   }
 
-  void _selectNext50() {
-    setState(() {
-      int count = 0;
-      for (final item in _filteredItems) {
-        if (!_selectedIds.contains(item.id)) {
-          _selectedIds.add(item.id);
-          count++;
-        }
-        if (count >= 50) break;
-      }
-      _isMultiSelect = true;
-    });
-  }
-
   void _deselectAll() {
     setState(() {
       _selectedIds.clear();
@@ -150,6 +136,7 @@ class _TrashScreenState extends State<TrashScreen> {
     
     // Password fallback
     if (widget.repo == null) return false;
+    if (!mounted) return false;
     final ctrl = TextEditingController();
     final secret = await showDialog<String>(
       context: context,
@@ -181,6 +168,7 @@ class _TrashScreenState extends State<TrashScreen> {
 
     bool needsAuth = toRestore.any((i) => i.vaultKind == VaultKind.hidden || i.type == 'password');
     if (needsAuth && !await _authenticate()) return;
+    if (!mounted) return;
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -215,7 +203,7 @@ class _TrashScreenState extends State<TrashScreen> {
     await _load();
     if (mounted) {
       if (failCount == 0) {
-        FloatingNotificationService.instance.show('${restoredCount} ${restoredCount == 1 ? 'item' : 'items'} restored');
+        FloatingNotificationService.instance.show('$restoredCount ${restoredCount == 1 ? 'item' : 'items'} restored');
       } else {
         FloatingNotificationService.instance.show(
           '$restoredCount restored, $failCount failed',

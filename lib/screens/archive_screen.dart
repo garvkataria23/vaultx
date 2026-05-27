@@ -296,6 +296,7 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
 
     final authenticated = await _authenticateForAction('Bulk $action');
     if (!authenticated) return;
+    if (!mounted) return;
 
     if (action == 'restore') {
       for (final item in selectedItems) {
