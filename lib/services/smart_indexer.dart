@@ -395,42 +395,23 @@ class SmartIndexerService {
     return result;
   }
 
-  /// Async version of [search] that runs in a background isolate via [compute].
+  /// Async version of [search] that avoids isolate overhead for typical queries.
+  /// Sending thousands of SecureNotes across the isolate boundary via `compute`
+  /// causes massive main-thread serialization freezes. It's much faster to
+  /// perform the search directly on the main thread (or microtask) since
+  /// it is typically pre-filtered by the Hive SearchIndexService.
   static Future<List<SearchMatch>> searchAsync(
     List<SecureNote> notes,
     SearchFilters filters,
   ) async {
-    final result = await compute(_searchWork, {
-      'notes': notes.map((n) => n.toJson()).toList(),
-      'filters': filters.toJson(),
-    });
-    return (result as List)
-        .map((e) => SearchMatch.fromJson(Map<String, dynamic>.from(e as Map)))
-        .toList();
+    // Yield to let any pending UI updates paint before searching
+    await Future.delayed(Duration.zero);
+    return search(notes, filters);
   }
 
-  /// Async version of [suggestions] that runs in a background isolate.
+  /// Async version of [suggestions] that avoids isolate overhead.
   static Future<List<String>> suggestionsAsync(List<SecureNote> notes) async {
-    return compute(
-      _suggestionsWork,
-      notes.map((n) => n.toJson()).toList(),
-    );
+    await Future.delayed(Duration.zero);
+    return suggestions(notes);
   }
-}
-
-List<Map<String, dynamic>> _searchWork(Map<String, dynamic> input) {
-  final notes = (input['notes'] as List)
-      .map((e) => SecureNote.fromJson(Map<String, dynamic>.from(e as Map)))
-      .toList();
-  final filters = SearchFilters.fromJson(
-    Map<String, dynamic>.from(input['filters'] as Map),
-  );
-  return SmartIndexerService.search(notes, filters).map((m) => m.toJson()).toList();
-}
-
-List<String> _suggestionsWork(List<Map<String, dynamic>> notesJson) {
-  final notes = notesJson
-      .map((e) => SecureNote.fromJson(e))
-      .toList();
-  return SmartIndexerService.suggestions(notes);
 }

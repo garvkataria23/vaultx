@@ -79,100 +79,108 @@ class VaultRepository {
     }).toList();
   }
 
-  Future<List<SecureNote>> loadNotes() async {
-    final allKeys = _box.keys.map((k) => k.toString()).toList();
+  Future<List<SecureNote>> loadNotes({void Function(List<SecureNote>)? onProgress}) async {
     final prefix = '$_prefix:';
-    final matchedKeys = allKeys.where((k) => k.startsWith(prefix) && !k.startsWith('${prefix}folder_metadata:')).toList();
+    final allKeys = _box.keys
+        .map((k) => k.toString())
+        .where((k) => k.startsWith(prefix) && !k.startsWith('${prefix}folder_metadata:'))
+        .toList();
 
-    final entries = <MapEntry<String, Map<String, dynamic>>>[];
-    for (final k in matchedKeys) {
+    if (allKeys.isEmpty) return [];
+
+    final cachedNotes = <SecureNote>[];
+    final keysToFetch = <String>[];
+    final rawEntries = <Map<String, dynamic>>[];
+
+    // 1. O(N) pass: check memory cache directly using precise keys
+    for (final k in allKeys) {
       final val = _box.get(k);
       if (val is Map) {
-        entries.add(MapEntry(k, _deepConvert(val)));
-      }
-    }
-
-    // Build cache keys and collect indices that need decryption.
-    final toDecryptIndices = <int>[];
-    final cachedResults = <int, Map<String, dynamic>>{};
-    for (var i = 0; i < entries.length; i++) {
-      final raw = entries[i].value;
-      final noteId = raw['id'] as String?;
-      final salt = raw['salt'] as String?;
-      
-      if (noteId == null || salt == null) {
-        continue;
-      }
-
-      final cacheKey = '$noteId:$salt';
-      if (_decryptCache.containsKey(cacheKey)) {
-        cachedResults[i] = _decryptCache[cacheKey]!;
-      } else {
-        toDecryptIndices.add(i);
-      }
-    }
-
-    // Batch-decrypt only the entries not already cached.
-    if (toDecryptIndices.isNotEmpty) {
-      final batchItems = <BatchItem>[];
-      for (final i in toDecryptIndices) {
-        final raw = entries[i].value;
-        batchItems.add(
-          BatchItem(
-            noteId: raw['id'] as String,
-            salt: raw['salt'] as String,
-            payload: Map<String, dynamic>.from(raw['payload'] as Map),
-          ),
-        );
-      }
-
-      final decrypted = await _crypto.decryptJsonBatch(batchItems, masterKey);
-
-      for (var j = 0; j < batchItems.length; j++) {
-        final item = batchItems[j];
-        final clear = decrypted[j];
-        if (clear == null) {
-          await AuditLog.write(
-            'Skipped unreadable encrypted record ${item.noteId}',
-          );
-          continue;
+        final noteId = val['id'] as String?;
+        final salt = val['salt'] as String?;
+        
+        if (noteId != null && salt != null) {
+          final cacheKey = '$noteId:$salt';
+          final cachedClear = _decryptCache[cacheKey];
+          
+          if (cachedClear != null) {
+            try {
+              final note = SecureNote.fromJson(cachedClear);
+              if (!note.deleted) cachedNotes.add(note);
+            } catch (_) {
+              keysToFetch.add(k);
+              rawEntries.add({'key': k, 'data': val});
+            }
+          } else {
+            keysToFetch.add(k);
+            rawEntries.add({'key': k, 'data': val});
+          }
+        } else {
+          // Fallback if missing id/salt (e.g., malformed record)
+          keysToFetch.add(k);
+          rawEntries.add({'key': k, 'data': val});
         }
-        final cacheKey = '${item.noteId}:${item.salt}';
-        _decryptCache[cacheKey] = clear;
-        cachedResults[toDecryptIndices[j]] = clear;
       }
     }
 
+    if (keysToFetch.isEmpty) {
+      final finalNotes = _finalizeNotes(cachedNotes);
+      onProgress?.call(finalNotes);
+      return finalNotes;
+    }
+    
+    // If we have cached notes, report them immediately
+    if (cachedNotes.isNotEmpty) {
+      onProgress?.call(_finalizeNotes(List.from(cachedNotes)));
+    }
+
+    // 2. Progressive loading: 
+    final notes = [...cachedNotes];
     final expiredKeys = <String>[];
-    final notes = <SecureNote>[];
-    for (var i = 0; i < entries.length; i++) {
-      final clear = cachedResults[i];
-      if (clear == null) continue;
-      try {
-        final note = SecureNote.fromJson(clear);
-        if (note.deleted) continue; // Skip deleted notes in normal load
-        if (note.expiresAt != null && DateTime.now().isAfter(note.expiresAt!)) {
-          expiredKeys.add(entries[i].key);
-          continue;
+
+    if (rawEntries.isNotEmpty) {
+      final results = await _crypto.decryptJsonBatchOptimized(
+        rawEntries,
+        masterKey,
+      );
+
+      for (final result in results) {
+        if (result == null) continue;
+
+        final clear = result['clear'] as Map<String, dynamic>;
+        final cacheKey = result['cacheKey'] as String;
+        final originalKey = result['originalKey'] as String;
+
+        _decryptCache[cacheKey] = clear;
+
+        try {
+          final note = SecureNote.fromJson(clear);
+          if (note.deleted) continue;
+          if (note.expiresAt != null && DateTime.now().isAfter(note.expiresAt!)) {
+            expiredKeys.add(originalKey);
+            continue;
+          }
+          notes.add(note);
+        } catch (e) {
+          debugPrint('Error parsing note: $e');
         }
-        notes.add(note);
-      } catch (_) {
-        final raw = entries[i].value;
-        await AuditLog.write(
-          'Skipped unreadable encrypted record ${raw['id']}',
-        );
       }
+
+      onProgress?.call(_finalizeNotes(List.from(notes)));
     }
 
     if (expiredKeys.isNotEmpty) {
-      _box.deleteAll(expiredKeys);
+      await _box.deleteAll(expiredKeys);
       for (final k in expiredKeys) {
         final noteId = k.split(':').last;
         _decryptCache.removeWhere((key, _) => key.startsWith('$noteId:'));
       }
-      await AuditLog.write('Deleted ${expiredKeys.length} expired note(s)');
     }
 
+    return _finalizeNotes(notes);
+  }
+
+  List<SecureNote> _finalizeNotes(List<SecureNote> notes) {
     notes.sort((a, b) {
       if (a.pinned != b.pinned) return a.pinned ? -1 : 1;
       return b.updatedAt.compareTo(a.updatedAt);

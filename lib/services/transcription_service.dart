@@ -13,6 +13,13 @@ import 'audit_log.dart';
 class TranscriptionService {
   TranscriptionService._();
 
+  /// Vosk model for Indian English (better accuracy for Hinglish / Indian accents).
+  /// Small model (36 MB) suitable for mobile. Switch to 'vosk-model-small-en-us-0.15'
+  /// for US English, or 'vosk-model-en-in-0.5' for more accurate Indian English (1 GB server model).
+  static const String _modelName = 'vosk-model-small-en-in-0.4';
+  static const String _modelUrl =
+      'https://alphacephei.com/vosk/models/$_modelName.zip';
+
   static bool _checked = false;
   static bool _available = false;
   static Model? _model;
@@ -41,31 +48,26 @@ class TranscriptionService {
     try {
       final vosk = VoskFlutterPlugin.instance();
 
-      // Check if model was previously downloaded
-      const modelName = 'vosk-model-small-en-us-0.15';
-      if (await _modelLoader.isModelAlreadyLoaded(modelName)) {
-        final path = await _modelLoader.modelPath(modelName);
+      if (await _modelLoader.isModelAlreadyLoaded(_modelName)) {
+        final path = await _modelLoader.modelPath(_modelName);
         _model = await vosk.createModel(path);
         return _model != null;
       }
-      return false;
+      
+      return await downloadModel();
     } catch (e) {
       await AuditLog.write('TranscriptionService: failed to load model: $e');
       return false;
     }
   }
 
-  /// Download the small English Vosk model (~40 MB).
-  /// Calls [onProgress] with a value 0.0–1.0 during download.
+  /// Download the Indian English Vosk model (~42 MB).
   static Future<bool> downloadModel({
     void Function(double progress)? onProgress,
   }) async {
     try {
-      const modelUrl =
-          'https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip';
-
       final path = await _modelLoader.loadFromNetwork(
-        modelUrl,
+        _modelUrl,
         forceReload: false,
       );
 
@@ -114,22 +116,51 @@ class TranscriptionService {
 
       final bytes = await file.readAsBytes();
       const chunkSize = 8192;
+      final fullText = StringBuffer();
 
-      for (var pos = 0; pos + chunkSize < bytes.length; pos += chunkSize) {
-        final chunk = bytes.sublist(pos, pos + chunkSize);
-        await recognizer.acceptWaveformBytes(Uint8List.fromList(chunk));
+      // Skip the WAV header dynamically if present so Vosk processes pure PCM
+      int startOffset = 0;
+      if (bytes.length > 44 && utf8.decode(bytes.take(4).toList(), allowMalformed: true) == 'RIFF') {
+        for (int i = 12; i < bytes.length - 4; i++) {
+          if (bytes[i] == 0x64 && bytes[i+1] == 0x61 && bytes[i+2] == 0x74 && bytes[i+3] == 0x61) {
+            startOffset = i + 8; // skip 'data' and the 4-byte size
+            break;
+          }
+        }
+        if (startOffset == 0) startOffset = 44; // fallback
       }
-      final remainingStart = (bytes.length ~/ chunkSize) * chunkSize;
+
+      for (var pos = startOffset; pos + chunkSize < bytes.length; pos += chunkSize) {
+        final chunk = bytes.sublist(pos, pos + chunkSize);
+        final utteranceComplete = await recognizer.acceptWaveformBytes(Uint8List.fromList(chunk));
+        if (utteranceComplete) {
+          final res = await recognizer.getResult();
+          final parsed = jsonDecode(res) as Map<String, dynamic>;
+          final t = parsed['text'] as String? ?? '';
+          if (t.isNotEmpty) fullText.write('$t ');
+        }
+      }
+      
+      final remainingStart = startOffset + ((bytes.length - startOffset) ~/ chunkSize) * chunkSize;
       if (remainingStart < bytes.length) {
         final remaining = bytes.sublist(remainingStart);
-        await recognizer.acceptWaveformBytes(Uint8List.fromList(remaining));
+        final utteranceComplete = await recognizer.acceptWaveformBytes(Uint8List.fromList(remaining));
+        if (utteranceComplete) {
+          final res = await recognizer.getResult();
+          final parsed = jsonDecode(res) as Map<String, dynamic>;
+          final t = parsed['text'] as String? ?? '';
+          if (t.isNotEmpty) fullText.write('$t ');
+        }
       }
 
       final resultJson = await recognizer.getFinalResult();
       recognizer.dispose();
 
-      final parsed = jsonDecode(resultJson) as Map<String, dynamic>;
-      final text = parsed['text'] as String? ?? '';
+      final parsedFinal = jsonDecode(resultJson) as Map<String, dynamic>;
+      final tFinal = parsedFinal['text'] as String? ?? '';
+      if (tFinal.isNotEmpty) fullText.write(tFinal);
+
+      final text = fullText.toString().trim();
 
       await AuditLog.write(
         text.isNotEmpty

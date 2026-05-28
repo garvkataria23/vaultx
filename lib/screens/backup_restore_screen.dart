@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/auth.dart';
 import '../models/backup.dart';
@@ -1030,6 +1031,21 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
                   padding: const EdgeInsets.only(top: 8),
                   child: Text(_megaError!, style: TextStyle(color: Theme.of(ctx).colorScheme.error, fontSize: 12)),
                 ),
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: GestureDetector(
+                  onTap: () => launchUrl(Uri.parse('https://mega.nz/register')),
+                  child: Text(
+                    "Don't have an account? Sign up",
+                    style: TextStyle(
+                      color: Theme.of(ctx).colorScheme.primary,
+                      fontSize: 12,
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
+                ),
+              ),
             ],
           ),
           actions: [

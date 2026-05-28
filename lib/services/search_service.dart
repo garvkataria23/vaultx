@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+
 import '../models/models.dart';
 import 'note_analyzer.dart';
 import 'search_index_service.dart';
@@ -122,17 +124,28 @@ class SearchService {
   List<String> getSuggestions(List<SecureNote> notes) {
     return SmartIndexerService.suggestions(notes);
   }
+  
+  /// Async search suggestions based on note corpus.
+  Future<List<String>> getSuggestionsAsync(List<SecureNote> notes) async {
+    return SmartIndexerService.suggestionsAsync(notes);
+  }
 
   /// Get category breakdown for all notes.
   Map<NoteCategory, List<SecureNote>> getCategories(List<SecureNote> notes) {
     if (_analyzer == null) return {};
-    // Get category for each note
     final result = <NoteCategory, List<SecureNote>>{};
     for (final note in notes) {
       final cat = _analyzer!.analyze(note).category;
       result.putIfAbsent(cat, () => []).add(note);
     }
     return result;
+  }
+
+  /// Async category breakdown running without isolate to prevent serialization overhead.
+  Future<Map<NoteCategory, List<SecureNote>>> getCategoriesAsync(List<SecureNote> notes) async {
+    if (notes.isEmpty) return {};
+    await Future.delayed(Duration.zero);
+    return getCategories(notes);
   }
 
   /// Get notes that contain sensitive data.
@@ -197,4 +210,15 @@ class SearchService {
       }
     });
   }
+}
+
+Map<String, List<Map<String, dynamic>>> _categoriesWork(List<Map<String, dynamic>> notesJson) {
+  final analyzer = NoteAnalyzerService();
+  final notes = notesJson.map((e) => SecureNote.fromJson(e)).toList();
+  final result = <String, List<Map<String, dynamic>>>{};
+  for (final note in notes) {
+    final cat = analyzer.analyze(note).category;
+    result.putIfAbsent(cat.name, () => []).add(note.toJson());
+  }
+  return result;
 }

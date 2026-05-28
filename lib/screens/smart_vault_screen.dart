@@ -403,7 +403,7 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Download vosk model in Settings > Voice Recognition first'),
+          content: Text('Failed to download voice model. Please check your internet connection.'),
           behavior: SnackBarBehavior.floating,
           duration: Duration(seconds: 4),
         ),
@@ -412,7 +412,17 @@ class _SmartVaultScreenState extends State<SmartVaultScreen>
     }
     if (!mounted) return;
     final path = await _recordAndGetPath();
-    if (path == null) return;
+    if (path == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Recording failed. Please check your microphone.'),
+          behavior: SnackBarBehavior.floating,
+          duration: Duration(seconds: 3),
+        ),
+      );
+      return;
+    }
     try {
       final text = await TranscriptionService.transcribeFile(path);
       if (text != null && text.isNotEmpty) {
@@ -1441,6 +1451,10 @@ class _VoiceRecordDialogState extends State<_VoiceRecordDialog>
   late AnimationController _pulseAnim;
   Timer? _timer;
   int _seconds = 0;
+  
+  StreamSubscription<record.Amplitude>? _ampSub;
+  double _currentAmplitude = -160.0;
+  bool _voiceDetected = false;
 
   @override
   void initState() {
@@ -1456,6 +1470,7 @@ class _VoiceRecordDialogState extends State<_VoiceRecordDialog>
   void dispose() {
     _pulseAnim.dispose();
     _timer?.cancel();
+    _ampSub?.cancel();
     _recorder.dispose();
     super.dispose();
   }
@@ -1471,22 +1486,47 @@ class _VoiceRecordDialogState extends State<_VoiceRecordDialog>
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => _seconds++);
     });
-    await _recorder.start(
-      record.RecordConfig(
-        encoder: record.AudioEncoder.pcm16bits,
-        sampleRate: 16000,
-        numChannels: 1,
-      ),
-      path: widget.outputPath,
-    );
+
+    try {
+      await _recorder.start(
+        record.RecordConfig(
+          encoder: record.AudioEncoder.wav,
+          sampleRate: 16000,
+          numChannels: 1,
+        ),
+        path: widget.outputPath,
+      );
+    } catch (e) {
+      debugPrint('VoiceRecordDialog: Failed to start recording: $e');
+      if (mounted) {
+        FloatingNotificationService.instance.show('Recording failed: $e');
+      }
+      widget.onResult(null);
+      return;
+    }
+    
+    if (mounted) {
+      _ampSub = _recorder.onAmplitudeChanged(const Duration(milliseconds: 100)).listen((amp) {
+        if (mounted) {
+          setState(() {
+            _currentAmplitude = amp.current;
+            if (amp.current > -40.0) _voiceDetected = true;
+          });
+        }
+      });
+    }
   }
 
   Future<void> _stopRecording() async {
     if (!_isRecording || _isDone) return;
     setState(() => _isDone = true);
     _timer?.cancel();
+    _ampSub?.cancel();
     try {
       await _recorder.stop();
+      if (!_voiceDetected && mounted) {
+        FloatingNotificationService.instance.show('Speak louder or check microphone.');
+      }
     } catch (_) {}
     widget.onResult(widget.outputPath);
   }

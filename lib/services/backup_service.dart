@@ -96,6 +96,8 @@ class BackupService {
     final box = Hive.box('vaultx_settings');
     final includeNotes = box.get('backupIncludeNotes', defaultValue: true) as bool;
     final includeHidden = box.get('backupIncludeHidden', defaultValue: true) as bool;
+    final includeDrive = box.get('backupIncludeDrive', defaultValue: true) as bool;
+    final includeMedia = box.get('backupIncludeMedia', defaultValue: true) as bool;
 
     final manifest = BackupManifest(
       createdAt: DateTime.now(),
@@ -275,127 +277,133 @@ class BackupService {
     }
 
     // ── 5. Drive metadata ────────────────────────────────────────────────────
-    components.add(
-      const ComponentProgress(
-        component: BackupComponent.driveMetadata,
-        state: BackupOperationState.inProgress,
-      ),
-    );
-    report();
     List<Map<String, dynamic>> driveRecords = [];
-    try {
-      driveRecords = _collectDriveRecords();
-      counts['driveFileCount'] = driveRecords.length;
-      data['driveMetadata'] = driveRecords;
-      final jsonStr = _canonicalJsonEncode(driveRecords);
-      final checksum = sha256.convert(utf8.encode(jsonStr)).toString();
-      checksums.add(
-        ComponentChecksum(
+    if (includeDrive) {
+      components.add(
+        const ComponentProgress(
           component: BackupComponent.driveMetadata,
-          sha256: checksum,
-          byteCount: jsonStr.length,
+          state: BackupOperationState.inProgress,
         ),
       );
-      components[components.length - 1] = components.last.copyWith(
-        state: BackupOperationState.completed,
-        totalItems: driveRecords.length,
-        itemsProcessed: driveRecords.length,
-      );
       report();
-    } catch (e, st) {
-      components[components.length - 1] = components.last.copyWith(
-        state: BackupOperationState.failed,
-        error: e.toString(),
-      );
-      report();
-      _log('BACKUP driveMetadata ERROR: $e\n$st');
+      try {
+        driveRecords = _collectDriveRecords();
+        counts['driveFileCount'] = driveRecords.length;
+        data['driveMetadata'] = driveRecords;
+        final jsonStr = _canonicalJsonEncode(driveRecords);
+        final checksum = sha256.convert(utf8.encode(jsonStr)).toString();
+        checksums.add(
+          ComponentChecksum(
+            component: BackupComponent.driveMetadata,
+            sha256: checksum,
+            byteCount: jsonStr.length,
+          ),
+        );
+        components[components.length - 1] = components.last.copyWith(
+          state: BackupOperationState.completed,
+          totalItems: driveRecords.length,
+          itemsProcessed: driveRecords.length,
+        );
+        report();
+      } catch (e, st) {
+        components[components.length - 1] = components.last.copyWith(
+          state: BackupOperationState.failed,
+          error: e.toString(),
+        );
+        report();
+        _log('BACKUP driveMetadata ERROR: $e\n$st');
+      }
     }
 
     // ── 7. Drive blobs (streamed, memory-safe) ───────────────────────────────
-    components.add(
-      const ComponentProgress(
-        component: BackupComponent.driveBlobs,
-        state: BackupOperationState.inProgress,
-      ),
-    );
-    report();
-    try {
-      final driveBlobs = await _collectDriveBlobsStreamed(driveRecords, compressMedia);
-      counts['driveBlobCount'] = driveBlobs.length;
-      data['driveBlobs'] = driveBlobs;
-      final jsonStr = _canonicalJsonEncode(driveBlobs);
-      final checksum = sha256.convert(utf8.encode(jsonStr)).toString();
-      checksums.add(
-        ComponentChecksum(
+    if (includeDrive) {
+      components.add(
+        const ComponentProgress(
           component: BackupComponent.driveBlobs,
-          sha256: checksum,
-          byteCount: jsonStr.length,
+          state: BackupOperationState.inProgress,
         ),
       );
-      components[components.length - 1] = components.last.copyWith(
-        state: BackupOperationState.completed,
-        totalItems: driveBlobs.length,
-        itemsProcessed: driveBlobs.length,
-      );
       report();
-    } catch (e, st) {
-      components[components.length - 1] = components.last.copyWith(
-        state: BackupOperationState.failed,
-        error: e.toString(),
-      );
-      report();
-      _log('BACKUP driveBlobs ERROR: $e\n$st');
+      try {
+        final driveBlobs = await _collectDriveBlobsStreamed(driveRecords, compressMedia);
+        counts['driveBlobCount'] = driveBlobs.length;
+        data['driveBlobs'] = driveBlobs;
+        final jsonStr = _canonicalJsonEncode(driveBlobs);
+        final checksum = sha256.convert(utf8.encode(jsonStr)).toString();
+        checksums.add(
+          ComponentChecksum(
+            component: BackupComponent.driveBlobs,
+            sha256: checksum,
+            byteCount: jsonStr.length,
+          ),
+        );
+        components[components.length - 1] = components.last.copyWith(
+          state: BackupOperationState.completed,
+          totalItems: driveBlobs.length,
+          itemsProcessed: driveBlobs.length,
+        );
+        report();
+      } catch (e, st) {
+        components[components.length - 1] = components.last.copyWith(
+          state: BackupOperationState.failed,
+          error: e.toString(),
+        );
+        report();
+        _log('BACKUP driveBlobs ERROR: $e\n$st');
+      }
     }
 
     // ── 8. Attachment blobs (streamed, memory-safe) ──────────────────────────
-    components.add(
-      const ComponentProgress(
-        component: BackupComponent.attachmentBlobs,
-        state: BackupOperationState.inProgress,
-      ),
-    );
-    report();
-    try {
-      final Set<String> allowedAttachmentIds = {};
-      final allVaultRecords = [...(data['mainVault'] as List), ...(data['hiddenVault'] as List)];
-      for (final record in allVaultRecords) {
-        if (record['attachments'] is List) {
-          for (final attachment in record['attachments']) {
-            if (attachment is Map && attachment['id'] != null) {
-              allowedAttachmentIds.add(attachment['id'] as String);
+    if (includeMedia) {
+      components.add(
+        const ComponentProgress(
+          component: BackupComponent.attachmentBlobs,
+          state: BackupOperationState.inProgress,
+        ),
+      );
+      report();
+      try {
+        final Set<String> allowedAttachmentIds = {};
+        final allVaultRecords = [...(data['mainVault'] as List), ...(data['hiddenVault'] as List)];
+        for (final record in allVaultRecords) {
+          if (record['attachments'] is List) {
+            for (final attachment in record['attachments']) {
+              if (attachment is Map && attachment['id'] != null) {
+                allowedAttachmentIds.add(attachment['id'] as String);
+              }
             }
           }
         }
-      }
 
-      final attachmentBlobs = await _collectAttachmentBlobsStreamed(
-        compressMedia, 
-        allowedAttachmentIds,
-      );
-      counts['attachmentBlobCount'] = attachmentBlobs.length;
-      data['attachmentBlobs'] = attachmentBlobs;
-      final jsonStr = _canonicalJsonEncode(attachmentBlobs);
-      final checksum = sha256.convert(utf8.encode(jsonStr)).toString();
-      checksums.add(
-        ComponentChecksum(
-          component: BackupComponent.attachmentBlobs,
-          sha256: checksum,
-          byteCount: jsonStr.length,
-        ),
-      );
-      components[components.length - 1] = components.last.copyWith(
-        state: BackupOperationState.completed,
-        totalItems: attachmentBlobs.length,
-        itemsProcessed: attachmentBlobs.length,
-      );
-      report();
-    } catch (e, st) {
-      components[components.length - 1] = components.last.copyWith(
-        state: BackupOperationState.failed,
-        error: e.toString(),
-      );
-      report();
-      _log('BACKUP attachmentBlobs ERROR: $e\n$st');
+        final attachmentBlobs = await _collectAttachmentBlobsStreamed(
+          compressMedia, 
+          allowedAttachmentIds,
+        );
+        counts['attachmentBlobCount'] = attachmentBlobs.length;
+        data['attachmentBlobs'] = attachmentBlobs;
+        final jsonStr = _canonicalJsonEncode(attachmentBlobs);
+        final checksum = sha256.convert(utf8.encode(jsonStr)).toString();
+        checksums.add(
+          ComponentChecksum(
+            component: BackupComponent.attachmentBlobs,
+            sha256: checksum,
+            byteCount: jsonStr.length,
+          ),
+        );
+        components[components.length - 1] = components.last.copyWith(
+          state: BackupOperationState.completed,
+          totalItems: attachmentBlobs.length,
+          itemsProcessed: attachmentBlobs.length,
+        );
+        report();
+      } catch (e, st) {
+        components[components.length - 1] = components.last.copyWith(
+          state: BackupOperationState.failed,
+          error: e.toString(),
+        );
+        report();
+        _log('BACKUP attachmentBlobs ERROR: $e\n$st');
+      }
     }
 
     // ── 9. Password entries ──────────────────────────────────────────────

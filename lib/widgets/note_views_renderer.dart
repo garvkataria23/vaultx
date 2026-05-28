@@ -653,46 +653,29 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
   }
 
   Widget _buildGallery() {
-    final imageNotes = widget.notes.where((n) => n.attachments.any((a) => a.kind == 'image')).toList();
-    if (imageNotes.isEmpty) {
-      return const Center(child: Text('No notes with images'));
-    }
     return GridView.builder(
+      key: const PageStorageKey('gallery_view'),
       controller: _scrollController,
       padding: widget.padding ?? EdgeInsets.fromLTRB(12, 12, 12, MediaQuery.of(context).viewPadding.bottom + 80),
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2,
-        childAspectRatio: 1.0,
+        crossAxisCount: 3,
+        childAspectRatio: 0.72,
         crossAxisSpacing: 10,
         mainAxisSpacing: 10,
       ),
-      itemCount: imageNotes.length,
+      itemCount: widget.notes.length,
       itemBuilder: (context, i) {
-        final note = imageNotes[i];
-        final imageAttachment = note.attachments.firstWhere((a) => a.kind == 'image');
-        return Card(
-          clipBehavior: Clip.antiAlias,
-          child: InkWell(
-            onTap: () => widget.onTap(note),
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                EncryptedThumbnail(
-                  noteId: note.id,
-                  attachment: imageAttachment,
-                  blobs: widget.blobs,
-                ),
-                Positioned(
-                  bottom: 0, left: 0, right: 0,
-                  child: Container(
-                    color: Colors.black54,
-                    padding: const EdgeInsets.all(8),
-                    child: Text(note.title.isEmpty ? 'Untitled' : note.title, style: const TextStyle(color: Colors.white, fontSize: 12), maxLines: 1),
-                  ),
-                )
-              ],
-            ),
-          ),
+        final note = widget.notes[i];
+        return GalleryNoteCard(
+          note: note,
+          blobs: widget.blobs,
+          isSelected: widget.selectedIds.contains(note.id),
+          isSelectionMode: widget.isSelectionMode,
+          onTap: () => widget.onTap(note),
+          onSelectionToggle: () => widget.onSelectionToggle?.call(note),
+          onDelete: () => widget.onDelete(note),
+          onTogglePin: () => widget.onTogglePin(note),
+          onToggleFavorite: () => widget.onToggleFavorite(note),
         );
       },
     );
@@ -724,6 +707,296 @@ class _NoteViewsRendererState extends State<NoteViewsRenderer> {
         );
       },
     );
+  }
+}
+
+class GalleryNoteCard extends StatelessWidget {
+  const GalleryNoteCard({
+    super.key,
+    required this.note,
+    this.blobs,
+    this.isSelected = false,
+    this.isSelectionMode = false,
+    required this.onTap,
+    required this.onSelectionToggle,
+    required this.onDelete,
+    required this.onTogglePin,
+    required this.onToggleFavorite,
+  });
+
+  final SecureNote note;
+  final EncryptedBlobService? blobs;
+  final bool isSelected;
+  final bool isSelectionMode;
+  final VoidCallback onTap;
+  final VoidCallback onSelectionToggle;
+  final VoidCallback onDelete;
+  final VoidCallback onTogglePin;
+  final VoidCallback onToggleFavorite;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final hasImage = note.attachments.any((a) => a.kind == 'image');
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Stack(
+            children: [
+              GestureDetector(
+                onTap: (isSelected || isSelectionMode) ? onSelectionToggle : onTap,
+                onLongPress: () {
+                  HapticFeedback.heavyImpact();
+                  onSelectionToggle();
+                },
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  decoration: BoxDecoration(
+                    color: cs.surface,
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(
+                      color: isSelected 
+                          ? cs.primary 
+                          : cs.outlineVariant.withValues(alpha: 0.1),
+                      width: isSelected ? 2.5 : 1,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.08),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: _buildPreview(context, hasImage),
+                ),
+              ),
+              if (isSelected)
+                Positioned(
+                  bottom: 8,
+                  right: 8,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: cs.primary,
+                      shape: BoxShape.circle,
+                    ),
+                    padding: const EdgeInsets.all(2),
+                    child: Icon(Icons.check, size: 14, color: cs.onPrimary),
+                  ),
+                ),
+              if (note.pinned && !isSelected)
+                Positioned(
+                  top: 8,
+                  left: 8,
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: BoxDecoration(
+                      color: Colors.black26,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: const Icon(Icons.push_pin, size: 12, color: Colors.white),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 6),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                note.title.isEmpty ? 'Untitled' : note.title,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 12,
+                  letterSpacing: -0.2,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 1),
+              Text(
+                _formatDate(note.updatedAt),
+                style: TextStyle(
+                  fontSize: 10,
+                  color: cs.onSurfaceVariant.withValues(alpha: 0.6),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPreview(BuildContext context, bool hasImage) {
+    final cs = Theme.of(context).colorScheme;
+    
+    if (note.locked) {
+      return Center(
+        child: Icon(Icons.lock_outline, color: cs.onSurfaceVariant.withValues(alpha: 0.3), size: 28),
+      );
+    }
+
+    if (hasImage) {
+      final img = note.attachments.firstWhere((a) => a.kind == 'image');
+      return EncryptedThumbnail(
+        noteId: note.id,
+        attachment: img,
+        blobs: blobs,
+        fit: BoxFit.cover,
+      );
+    }
+
+    switch (note.type) {
+      case NoteType.checklist:
+        return _buildChecklistPreview(cs);
+      case NoteType.todo:
+        return _buildTodoPreview(cs);
+      case NoteType.voice:
+        return _buildVoicePreview(cs);
+      case NoteType.drawing:
+        return _buildDrawingPreview(cs);
+      case NoteType.text:
+      default:
+        return _buildTextPreview(cs);
+    }
+  }
+
+  Widget _buildTextPreview(ColorScheme cs) {
+    return Padding(
+      padding: const EdgeInsets.all(10),
+      child: Text(
+        note.body,
+        style: TextStyle(
+          fontSize: 9,
+          color: cs.onSurfaceVariant.withValues(alpha: 0.7),
+          height: 1.2,
+        ),
+        maxLines: 10,
+        overflow: TextOverflow.fade,
+      ),
+    );
+  }
+
+  Widget _buildChecklistPreview(ColorScheme cs) {
+    return Padding(
+      padding: const EdgeInsets.all(10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: note.checklist.take(6).map((item) => Padding(
+          padding: const EdgeInsets.only(bottom: 2),
+          child: Row(
+            children: [
+              Icon(
+                item.done ? Icons.check_circle_outline : Icons.radio_button_unchecked,
+                size: 9,
+                color: item.done ? cs.primary : cs.onSurfaceVariant.withValues(alpha: 0.5),
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  item.text,
+                  style: TextStyle(
+                    fontSize: 8,
+                    color: item.done ? cs.onSurfaceVariant.withValues(alpha: 0.4) : cs.onSurfaceVariant,
+                    decoration: item.done ? TextDecoration.lineThrough : null,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        )).toList(),
+      ),
+    );
+  }
+
+  Widget _buildTodoPreview(ColorScheme cs) {
+    return Padding(
+      padding: const EdgeInsets.all(10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: note.todoList.take(6).map((task) => Padding(
+          padding: const EdgeInsets.only(bottom: 2),
+          child: Row(
+            children: [
+              Container(
+                width: 3,
+                height: 3,
+                decoration: BoxDecoration(
+                  color: _getPriorityColor(task.priority),
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  task.text,
+                  style: TextStyle(
+                    fontSize: 8,
+                    color: task.done ? cs.onSurfaceVariant.withValues(alpha: 0.4) : cs.onSurfaceVariant,
+                    decoration: task.done ? TextDecoration.lineThrough : null,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        )).toList(),
+      ),
+    );
+  }
+
+  Color _getPriorityColor(TodoPriority priority) {
+    switch (priority) {
+      case TodoPriority.high: return Colors.red;
+      case TodoPriority.medium: return Colors.orange;
+      case TodoPriority.low: return Colors.blue;
+    }
+  }
+
+  Widget _buildVoicePreview(ColorScheme cs) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.mic, color: cs.primary.withValues(alpha: 0.3), size: 32),
+          if (note.transcript.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Text(
+                note.transcript,
+                style: TextStyle(fontSize: 7, color: cs.onSurfaceVariant.withValues(alpha: 0.6)),
+                maxLines: 2,
+                textAlign: TextAlign.center,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDrawingPreview(ColorScheme cs) {
+    return Center(
+      child: Icon(Icons.brush, color: cs.primary.withValues(alpha: 0.3), size: 36),
+    );
+  }
+
+  String _formatDate(DateTime date) {
+    final now = DateTime.now();
+    if (date.year == now.year && date.month == now.month && date.day == now.day) {
+      return DateFormat.jm().format(date);
+    }
+    return DateFormat.yMMMd().format(date);
   }
 }
 

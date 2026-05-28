@@ -40,6 +40,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
   PasswordVaultService? _passwordVault;
   ItemActionService? _itemActions;
   List<SecureNote> _notes = [];
+  bool _loadingNotes = false;
   String _query = '';
   String _folder = 'All';
   String _sort = 'date';
@@ -199,45 +200,74 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
       }
       return;
     }
-    final notes = await _repo!.loadNotes();
-    final metadata = await _repo!.loadFolderMetadata();
-    
-    if (mounted) {
-      setState(() {
-        _notes = notes;
-        _cachedFolders = ['All', ...{for (final n in notes) n.folder}];
-        _folderMetadata = { for (final f in metadata) f.name : f };
-      });
-      _computeCategoriesAsync(notes);
-      _buildSearchSuggestionsAsync(notes);
-      _archivedCount = notes.where((n) => n.archived).length;
-      if (_passwordVault != null) {
-        _loadArchivedCountAsync();
+    if (mounted) setState(() => _loadingNotes = true);
+    Future.microtask(() async {
+      if (!mounted) return;
+      final sw = Stopwatch()..start();
+      try {
+        // Single decryption batch — onProgress not needed since all notes
+        // arrive at once. Skeleton cards are shown until this completes.
+        final finalNotes = await _repo!.loadNotes();
+
+        debugPrint("Load notes completed in ${sw.elapsedMilliseconds} ms");
+
+        sw.reset();
+        final metadata = await _repo!.loadFolderMetadata();
+        debugPrint("Load folder metadata took ${sw.elapsedMilliseconds} ms");
+
+        if (mounted) {
+          sw.reset();
+          setState(() {
+            _loadingNotes = false;
+            _notes = finalNotes;
+            _cachedFolders = ['All', ...{for (final n in finalNotes) n.folder}];
+            _folderMetadata = { for (final f in metadata) f.name : f };
+          });
+          _computeCategoriesAsync(finalNotes);
+          _buildSearchSuggestionsAsync(finalNotes);
+          _archivedCount = finalNotes.where((n) => n.archived).length;
+          if (_passwordVault != null) {
+            _loadArchivedCountAsync();
+          }
+          await _runSearch();
+          debugPrint("UI state update and search prep took ${sw.elapsedMilliseconds} ms");
+
+          if (_blobs != null) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              SmartOcrScanner.start(_repo!, _blobs!);
+              StartupDiagnostics.instance.markAiReady();
+            });
+          }
+        }
+      } catch (e) {
+        debugPrint('Failed to load notes: $e');
+        if (mounted) setState(() => _loadingNotes = false);
       }
-      _runSearch();
-      
-      if (_blobs != null) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          SmartOcrScanner.start(_repo!, _blobs!);
-          StartupDiagnostics.instance.markAiReady();
-        });
-      }
-    }
+    });
     StartupDiagnostics.instance.markFirstFrame();
     StartupDiagnostics.instance.report();
   }
 
   void _computeCategoriesAsync(List<SecureNote> notes) {
-    Future.microtask(() {
+    if (notes.isEmpty) return;
+    _searchService.getCategoriesAsync(notes).then((cats) {
       if (!mounted) return;
-      _computeCategories();
+      _noteCategories = {};
+      _cachedAvailableCategories = [];
+      for (final entry in cats.entries) {
+        _cachedAvailableCategories.add(entry.key.name);
+        for (final note in entry.value) {
+          _noteCategories[note.id] = entry.key.name;
+        }
+      }
+      // Trigger a silent rebuild if needed, but categories are usually just for filters
     });
   }
 
   void _buildSearchSuggestionsAsync(List<SecureNote> notes) {
-    Future.microtask(() {
+    if (notes.isEmpty) return;
+    _searchService.getSuggestionsAsync(notes).then((suggestions) {
       if (!mounted) return;
-      final suggestions = _searchService.getSuggestions(notes);
       setState(() => _searchSuggestions = suggestions);
     });
   }
@@ -536,37 +566,15 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
     required String title,
     required String label,
   }) async {
-    final controller = TextEditingController();
-    final result = await showDialog<String>(
+    return showDialog<String>(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: Text(title),
-          content: TextField(
-            controller: controller,
-            obscureText: true,
-            autofocus: true,
-            decoration: InputDecoration(
-              labelText: label,
-              border: const OutlineInputBorder(),
-            ),
-            onSubmitted: (v) => Navigator.of(context).pop(v),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(controller.text),
-              child: const Text('Unlock'),
-            ),
-          ],
-        );
-      },
+      barrierDismissible: false,
+      builder: (context) => PasswordVerifyDialog(
+        title: title,
+        labelText: label,
+        buttonText: 'Unlock',
+      ),
     );
-    controller.dispose();
-    return result;
   }
 
   Set<FilterChipType> _updateActiveFilters() {
@@ -669,6 +677,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
   }
 
   Future<void> _openEditor([SecureNote? note]) async {
+    if (!mounted) return;
     final navigator = Navigator.of(context);
     if (note != null) {
       await NavigationService.openNote(
@@ -704,50 +713,21 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
     }
 
     if (!mounted) return false;
-    final ctrl = TextEditingController();
+    
     final secret = await showDialog<String>(
       context: context,
       barrierDismissible: false,
-      builder: (dialogCtx) => AlertDialog(
-        title: Text(title),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Enter your ${widget.authResult.kind == VaultKind.hidden ? 'hidden vault' : widget.authResult.kind == VaultKind.decoy ? 'decoy' : 'master'} password to continue.',
-              style: const TextStyle(fontSize: 13),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: ctrl,
-              obscureText: true,
-              autofocus: true,
-              decoration: InputDecoration(
-                labelText: widget.authResult.kind == VaultKind.hidden
-                    ? 'Hidden vault password'
-                    : widget.authResult.kind == VaultKind.decoy
-                        ? 'Decoy password'
-                        : 'Master password',
-                border: const OutlineInputBorder(),
-              ),
-              onSubmitted: (val) => Navigator.of(dialogCtx).pop(val),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogCtx).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogCtx).pop(ctrl.text),
-            child: const Text('Verify'),
-          ),
-        ],
+      builder: (dialogCtx) => PasswordVerifyDialog(
+        title: title,
+        description: 'Enter your ${widget.authResult.kind == VaultKind.hidden ? 'hidden vault' : widget.authResult.kind == VaultKind.decoy ? 'decoy' : 'master'} password to continue.',
+        labelText: widget.authResult.kind == VaultKind.hidden
+            ? 'Hidden vault password'
+            : widget.authResult.kind == VaultKind.decoy
+                ? 'Decoy password'
+                : 'Master password',
+        buttonText: 'Verify',
       ),
     );
-    ctrl.dispose();
 
     if (secret == null || secret.isEmpty) return false;
     if (!mounted) return false;
@@ -1184,11 +1164,13 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
         ),
         Expanded(
           child: filtered.isEmpty
-              ? EmptyState(
-                  icon: Icons.note_add_outlined,
-                  title: 'No secure notes yet',
-                  body: 'Create your first encrypted note, voice memo, checklist, or drawing.',
-                )
+              ? _loadingNotes
+                  ? _buildSkeletonList()
+                  : EmptyState(
+                      icon: Icons.note_add_outlined,
+                      title: 'No secure notes yet',
+                      body: 'Create your first encrypted note, voice memo, checklist, or drawing.',
+                    )
               : ValueListenableBuilder<int>(
                   valueListenable: _visibleCount,
                   builder: (context, visible, _) {
@@ -1217,9 +1199,11 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
                             onTap: (note) async {
                               if (note.locked) {
                                 final authenticated = await _authenticateForAction('Unlock Note');
-                                if (!authenticated) return;
+                                if (!authenticated || !mounted) return;
                               }
+                              if (!mounted) return;
                               await _openEditor(note);
+                              if (!mounted) return;
                               if (note.oneTimeView) {
                                 if (widget.authResult.kind == VaultKind.decoy) {
                                   await DecoySeedService.deleteNote(note.id);
@@ -1234,12 +1218,12 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
                               } else {
                                 await _itemActions?.deleteNote(context, note);
                               }
-                              await _load();
+                              if (mounted) await _load();
                             },
                             onToggleArchive: (note) async {
                               if (widget.authResult.kind == VaultKind.decoy) return;
                               await _itemActions?.archiveNote(context, note);
-                              await _load();
+                              if (mounted) await _load();
                             },
                             onToggleFavorite: (note) async {
                               if (widget.authResult.kind == VaultKind.decoy) {
@@ -1249,17 +1233,17 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
                               } else {
                                 await _repo!.save(note.copyWith(favorite: !note.favorite));
                               }
-                              await _load();
+                              if (mounted) await _load();
                             },
                             onTogglePin: (note) async {
                               if (widget.authResult.kind == VaultKind.decoy) return;
                               await _itemActions?.pinNote(context, note);
-                              await _load();
+                              if (mounted) await _load();
                             },
                             onToggleLock: (note) async {
                               if (widget.authResult.kind == VaultKind.decoy) return;
                               await _itemActions?.lockNote(context, note);
-                              await _load();
+                              if (mounted) await _load();
                             },
                             onShare: (note) async {
                               if (widget.authResult.kind == VaultKind.decoy) return;
@@ -1268,7 +1252,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
                             onMove: (note) async {
                               if (widget.authResult.kind == VaultKind.decoy) return;
                               await _itemActions?.moveNote(context, note);
-                              await _load();
+                              if (mounted) await _load();
                             },
                           ),
                         ),
@@ -1278,6 +1262,66 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
                 ),
         ),
       ],
+    );
+  }
+
+  static Widget _buildSkeletonList() {
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 120),
+      itemCount: 8,
+      itemBuilder: (_, _) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Card(
+          margin: EdgeInsets.zero,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Container(
+                  width: 40, height: 40,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        height: 14,
+                        width: 180,
+                        decoration: BoxDecoration(
+                          color: Colors.grey.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Container(
+                        height: 12,
+                        width: double.infinity,
+                        decoration: BoxDecoration(
+                          color: Colors.grey.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  width: 24, height: 24,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.withValues(alpha: 0.1),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -1588,6 +1632,84 @@ class _HomeFilterSheetState extends State<_HomeFilterSheet> {
       case 'priority': return 'Priority';
       default: return s;
     }
+  }
+}
+
+class PasswordVerifyDialog extends StatefulWidget {
+  final String title;
+  final String? description;
+  final String labelText;
+  final String buttonText;
+
+  const PasswordVerifyDialog({
+    super.key,
+    required this.title,
+    this.description,
+    required this.labelText,
+    required this.buttonText,
+  });
+
+  @override
+  State<PasswordVerifyDialog> createState() => _PasswordVerifyDialogState();
+}
+
+class _PasswordVerifyDialogState extends State<PasswordVerifyDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (widget.description != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Text(
+                  widget.description!,
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+            TextField(
+              controller: _controller,
+              obscureText: true,
+              autofocus: true,
+              decoration: InputDecoration(
+                labelText: widget.labelText,
+                border: const OutlineInputBorder(),
+                isDense: true,
+              ),
+              onSubmitted: (val) => Navigator.of(context).pop(val),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text),
+          child: Text(widget.buttonText),
+        ),
+      ],
+    );
   }
 }
 

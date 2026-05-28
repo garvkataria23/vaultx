@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:open_file/open_file.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:uuid/uuid.dart';
 
@@ -213,13 +215,16 @@ class _NoteEditorState extends State<NoteEditor> {
   final LocalAuthentication _localAuth = LocalAuthentication();
 
   bool _recording = false;
-  VoiceNoteRecorder? _recorder;
+  AudioRecorder? _recorder;
+  String? _dictationPath;
   Timer? _clipboardTimer;
   AudioPlayer? _audioPlayer;
   String? _playingAttachmentId;
   Duration _audioPosition = Duration.zero;
   Duration _audioDuration = Duration.zero;
   bool _isAudioPlaying = false;
+  bool _isSeeking = false;
+  bool _isAudioReady = false;
   StreamSubscription? _positionSub;
   StreamSubscription? _durationSub;
   StreamSubscription? _stateSub;
@@ -229,7 +234,11 @@ class _NoteEditorState extends State<NoteEditor> {
   final OcrQueueService _queueService = OcrQueueService();
 
   bool _transcribing = false;
-  bool _usePcm = false;
+
+  // Voice recording amplitude monitoring
+  StreamSubscription? _ampSub;
+  double _currentAmplitude = -160.0;
+  bool _voiceDetected = false;
 
   // Auto-save state
   Timer? _autoSaveTimer;
@@ -390,6 +399,11 @@ class _NoteEditorState extends State<NoteEditor> {
     _ocrText.dispose();
     _queueService.cancelAll();
     _queueService.removeNoteJobs(_note.id);
+    _ampSub?.cancel();
+    _recorder?.dispose();
+    if (_dictationPath != null) {
+      try { File(_dictationPath!).delete(); } catch (_) {}
+    }
     _disposeAudio();
     super.dispose();
   }
@@ -431,6 +445,7 @@ class _NoteEditorState extends State<NoteEditor> {
     _audioPlayer = null;
     _playingAttachmentId = null;
     _isAudioPlaying = false;
+    _isAudioReady = false;
   }
 
   Future<void> _playVoiceAttachment(SecureAttachment attachment) async {
@@ -455,31 +470,64 @@ class _NoteEditorState extends State<NoteEditor> {
     final player = AudioPlayer();
     _audioPlayer = player;
     _playingAttachmentId = attachment.id;
+    _isAudioReady = false;
 
     _positionSub = player.onPositionChanged.listen((pos) {
-      if (mounted) setState(() => _audioPosition = pos);
+      if (mounted && !_isSeeking) setState(() => _audioPosition = pos);
     });
     _durationSub = player.onDurationChanged.listen((dur) {
-      if (mounted) setState(() => _audioDuration = dur);
+      if (mounted) {
+        setState(() {
+          _audioDuration = dur;
+          _isAudioReady = true;
+        });
+      }
     });
     _stateSub = player.onPlayerStateChanged.listen((state) {
       if (mounted) {
-        setState(() => _isAudioPlaying = state == PlayerState.playing);
+        setState(() {
+          _isAudioPlaying = state == PlayerState.playing;
+          if (state == PlayerState.completed) {
+            _audioPosition = Duration.zero;
+            _isAudioPlaying = false;
+          }
+        });
       }
     });
 
-    await player.play(DeviceFileSource(tempPath));
+    try {
+      await player.play(DeviceFileSource(tempPath));
+    } catch (e) {
+      debugPrint('Play error: $e');
+    }
     if (mounted) setState(() {});
   }
 
   Future<void> _seekTo(double value) async {
+    if (!_isAudioReady) return;
     final player = _audioPlayer;
     if (player == null) return;
+    
+    final durationMs = _audioDuration.inMilliseconds;
+    if (durationMs <= 0) return;
+    
     final position = Duration(
-      milliseconds: (value * _audioDuration.inMilliseconds).toInt(),
+      milliseconds: (value * durationMs).toInt(),
     );
-    await player.seek(position);
-    if (mounted) setState(() => _audioPosition = position);
+    if (position > _audioDuration) return;
+
+    if (mounted) setState(() {
+      _isSeeking = true;
+      _audioPosition = position;
+    });
+
+    try {
+      await player.seek(position);
+    } catch (e) {
+      debugPrint('Seek error: $e');
+    } finally {
+      if (mounted) setState(() => _isSeeking = false);
+    }
   }
 
   String _formatDuration(Duration d) {
@@ -617,73 +665,118 @@ class _NoteEditorState extends State<NoteEditor> {
     _savedSelection = _body.selection;
   }
 
-  Future<void> _toggleRecording() async {
-    if (widget.blobs == null) return;
+  Future<void> _toggleDictation() async {
     if (_recording) {
-      final attachment = await _recorder?.stopAndEncrypt();
-      if (!mounted) return;
-      if (attachment != null) {
-        final wasPcm = _recorder?.isPcmMode ?? false;
-        setState(() {
-          _recording = false;
-          _note = _note.copyWith(
-            type: NoteType.voice,
-            attachments: [..._note.attachments, attachment],
-          );
-        });
-        if (wasPcm) {
-          _transcribeAttachment(attachment);
-        }
-      } else {
+      _ampSub?.cancel();
+      _ampSub = null;
+
+      final path = _dictationPath;
+      await _recorder?.stop();
+      _recorder?.dispose();
+      _recorder = null;
+      _dictationPath = null;
+
+      if (path == null || !File(path).existsSync()) {
         setState(() => _recording = false);
-      }
-      return;
-    }
-    _recorder = VoiceNoteRecorder(widget.blobs!, _note.id);
-    final started = _usePcm
-        ? await _recorder!.startPcm()
-        : await _recorder!.start();
-    if (mounted) setState(() => _recording = started);
-  }
-
-  Future<void> _transcribeAttachment(SecureAttachment attachment) async {
-    if (widget.blobs == null || !TranscriptionService.isAvailable()) return;
-    setState(() => _transcribing = true);
-
-    try {
-      final tempPath = await widget.blobs!.decryptAttachmentToTemp(
-        _note.id,
-        attachment,
-      );
-      if (!mounted || tempPath.isEmpty) {
-        setState(() => _transcribing = false);
         return;
       }
 
-      final text = await TranscriptionService.transcribeFile(tempPath);
-      if (!mounted) return;
-
-      if (text != null && text.isNotEmpty) {
-        setState(() {
-          _note = _note.copyWith(transcript: text);
-          _transcribing = false;
-        });
-        _triggerAutoSave();
-      } else {
-        setState(() => _transcribing = false);
-        if (mounted) {
-          FloatingNotificationService.instance.show(
-            'No speech detected in recording',
-          );
+      final file = File(path);
+      final size = await file.length();
+      if (size < 1000) {
+        try { await file.delete(); } catch (_) {}
+        setState(() => _recording = false);
+        if (!_voiceDetected && mounted) {
+          FloatingNotificationService.instance.show('Speak louder or check microphone.');
         }
+        return;
       }
-    } catch (e) {
+
+      setState(() {
+        _recording = false;
+        _transcribing = true;
+      });
+
+      try {
+        final text = await TranscriptionService.transcribeFile(path);
+        if (text != null && text.isNotEmpty && mounted) {
+          final sel = _body.selection;
+          final current = _body.text;
+          final pos = (sel.isValid && sel.start >= 0) ? sel.start : current.length;
+          final needsSpace = pos > 0 && current.isNotEmpty && !current[pos - 1].contains(RegExp(r'\s'));
+          final insert = needsSpace ? ' $text' : text;
+          final updated = current.replaceRange(pos, pos, insert);
+          _body.value = TextEditingValue(
+            text: updated,
+            selection: TextSelection.collapsed(offset: pos + insert.length),
+          );
+          _bodyFocus.requestFocus();
+          _onContentChanged();
+        } else if (mounted) {
+          FloatingNotificationService.instance.show('No speech detected');
+        }
+      } catch (e) {
+        if (mounted) {
+          FloatingNotificationService.instance.show('Dictation failed: $e');
+        }
+      } finally {
+        try { await file.delete(); } catch (_) {}
+        if (mounted) setState(() => _transcribing = false);
+      }
+      return;
+    }
+
+    if (_isAudioPlaying) {
+      await _audioPlayer?.pause();
+      setState(() => _isAudioPlaying = false);
+    }
+
+    final r = AudioRecorder();
+    if (!await r.hasPermission()) {
       if (mounted) {
-        setState(() => _transcribing = false);
-        FloatingNotificationService.instance.show(
-          'Transcription failed: $e',
-        );
+        FloatingNotificationService.instance.show('Microphone permission denied');
       }
+      return;
+    }
+
+    final dir = await getTemporaryDirectory();
+    final p = '${dir.path}/vaultx_dictation_${DateTime.now().millisecondsSinceEpoch}.wav';
+
+    try {
+      await r.start(
+        const RecordConfig(
+          encoder: AudioEncoder.wav,
+          sampleRate: 16000,
+          numChannels: 1,
+        ),
+        path: p,
+      );
+    } catch (e) {
+      r.dispose();
+      if (mounted) {
+        FloatingNotificationService.instance.show('Failed to start: $e');
+      }
+      return;
+    }
+
+    _recorder = r;
+    _dictationPath = p;
+
+    if (mounted) {
+      setState(() {
+        _recording = true;
+        _voiceDetected = false;
+        _currentAmplitude = -160.0;
+      });
+
+      _ampSub = r.onAmplitudeChanged(const Duration(milliseconds: 100)).listen((amp) {
+        if (mounted) {
+          setState(() {
+            _currentAmplitude = amp.current;
+            if (amp.current > -40.0) _voiceDetected = true;
+          });
+        }
+      });
     }
   }
 
@@ -1530,20 +1623,46 @@ class _NoteEditorState extends State<NoteEditor> {
               const SizedBox(width: 12),
               Expanded(
                 child: FilledButton.tonalIcon(
-                  onPressed: _toggleRecording,
-                  icon: Icon(_recording ? Icons.stop : Icons.mic),
-                  label: Text(_recording ? 'Stop recording' : 'Record voice'),
+                  onPressed: _toggleDictation,
+                  icon: _transcribing
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Icon(_recording ? Icons.stop : Icons.mic),
+                  label: Text(_transcribing
+                      ? 'Transcribing...'
+                      : _recording
+                          ? 'Stop'
+                          : 'Dictate'),
                 ),
               ),
             ],
           ),
-          if (TranscriptionService.isAvailable())
+          if (_recording || _transcribing)
             Padding(
               padding: const EdgeInsets.only(top: 8),
-              child: FilterChip(
-                label: const Text('Transcribe after recording'),
-                selected: _usePcm,
-                onSelected: (v) => setState(() => _usePcm = v),
+              child: Row(
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: _transcribing
+                          ? Theme.of(context).colorScheme.primary
+                          : Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    _transcribing
+                        ? 'Transcribing speech...'
+                        : 'Listening... Tap Stop when done',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
               ),
             ),
           if (_note.attachments.isNotEmpty) ...[
@@ -1630,10 +1749,17 @@ class _NoteEditorState extends State<NoteEditor> {
                           children: [
                             Slider(
                               value: _audioDuration.inMilliseconds > 0
-                                  ? _audioPosition.inMilliseconds /
-                                        _audioDuration.inMilliseconds
-                                  : 0,
-                              onChanged: _seekTo,
+                                  ? (_audioPosition.inMilliseconds / _audioDuration.inMilliseconds).clamp(0.0, 1.0)
+                                  : 0.0,
+                              onChanged: (v) {
+                                if (mounted) {
+                                  setState(() {
+                                    _isSeeking = true;
+                                    _audioPosition = Duration(milliseconds: (v * _audioDuration.inMilliseconds).toInt());
+                                  });
+                                }
+                              },
+                              onChangeEnd: _seekTo,
                             ),
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1655,57 +1781,6 @@ class _NoteEditorState extends State<NoteEditor> {
                 ),
               ),
             ),
-          ],
-          if (_note.attachments.any((a) => a.kind == 'voice')) ...[
-            const SizedBox(height: 8),
-            Text('Transcription', style: Theme.of(context).textTheme.titleSmall),
-            const SizedBox(height: 4),
-            if (_transcribing)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 4),
-                child: Row(
-                  children: [
-                    SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
-                    SizedBox(width: 10),
-                    Text('Transcribing...', style: TextStyle(fontSize: 12)),
-                  ],
-                ),
-              ),
-            if (_note.transcript.isNotEmpty && !_transcribing) ...[
-              TextField(
-                readOnly: true,
-                minLines: 2,
-                maxLines: 5,
-                style: const TextStyle(fontSize: 13),
-                decoration: const InputDecoration(
-                  labelText: 'Transcript',
-                  border: OutlineInputBorder(),
-                  contentPadding: EdgeInsets.all(8),
-                ),
-                controller: TextEditingController(text: _note.transcript),
-              ),
-              const SizedBox(height: 4),
-              OutlinedButton.icon(
-                onPressed: () {
-                  setState(() {
-                    _body.text = _body.text.isEmpty ? _note.transcript : '${_body.text}\n\n--- Transcript ---\n${_note.transcript}';
-                  });
-                },
-                icon: const Icon(Icons.copy, size: 14),
-                label: const Text('Copy to body'),
-                style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
-              ),
-            ],
-            if (_note.transcript.isEmpty && !_transcribing && TranscriptionService.isAvailable())
-              OutlinedButton.icon(
-                onPressed: () {
-                  final v = _note.attachments.firstWhere((a) => a.kind == 'voice');
-                  _transcribeAttachment(v);
-                },
-                icon: const Icon(Icons.transcribe, size: 16),
-                label: const Text('Transcribe'),
-                style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
-              ),
           ],
           if (_hasImageAttachments || _ocrText.text.isNotEmpty) ...[
             const SizedBox(height: 8),

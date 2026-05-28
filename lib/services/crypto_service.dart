@@ -225,6 +225,18 @@ class CryptoService {
     );
   }
 
+  /// NEW: Optimized batch decryption that also handles deep conversion
+  /// and returns metadata for caching.
+  Future<List<Map<String, dynamic>?>> decryptJsonBatchOptimized(
+    List<Map<String, dynamic>> rawEntries,
+    Uint8List masterKey,
+  ) async {
+    final input = _BatchOptimizedInput(masterKey: masterKey, entries: rawEntries);
+    // Always use an isolate so the main thread stays responsive to taps, scrolling,
+    // and animation frames during decryption.
+    return compute(_decryptBatchOptimizedWork, input);
+  }
+
   static List<Map<String, dynamic>?> _decryptBatchWork(_BatchInput input) {
     final results = <Map<String, dynamic>?>[];
     for (final item in input.items) {
@@ -283,6 +295,99 @@ class CryptoService {
       }
     }
     return results;
+  }
+
+  static List<Map<String, dynamic>?> _decryptBatchOptimizedWork(_BatchOptimizedInput input) {
+    final results = <Map<String, dynamic>?>[];
+    for (final entry in input.entries) {
+      try {
+        final rawData = entry['data'] as Map;
+        final originalKey = entry['key'] as String;
+        
+        // Use the repository's deep conversion logic (duplicated here for isolate safety)
+        final raw = _deepConvertInIsolate(rawData);
+        
+        final noteId = raw['id'] as String?;
+        final salt = raw['salt'] as String?;
+        final payload = raw['payload'] as Map<String, dynamic>?;
+
+        if (noteId == null || salt == null || payload == null) {
+          results.add(null);
+          continue;
+        }
+
+        final recordKey = _deriveRecordKeySync(
+          input.masterKey,
+          noteId,
+          salt,
+        );
+
+        Map<String, dynamic>? clear;
+        if (payload['v'] == 2) {
+          final nonce = base64Decode(payload['nonce'] as String);
+          final sealed = base64Decode(payload['ct'] as String);
+          final cipher = GCMBlockCipher(AESEngine())
+            ..init(
+              false,
+              pc.AEADParameters(
+                pc.KeyParameter(recordKey),
+                128,
+                Uint8List.fromList(nonce),
+                Uint8List.fromList(utf8.encode('VaultX:v2:json')),
+              ),
+            );
+          final clearBytes = cipher.process(Uint8List.fromList(sealed));
+          clear = jsonDecode(utf8.decode(clearBytes)) as Map<String, dynamic>;
+        } else {
+          final iv = payload['iv'] as String;
+          final ct = payload['ct'] as String;
+          final expected = Hmac(sha256, recordKey).convert(utf8.encode('v1.$iv.$ct')).toString();
+          if (expected != payload['tag']) {
+            results.add(null);
+            continue;
+          }
+          final aes = enc.Encrypter(
+            enc.AES(enc.Key(recordKey), mode: enc.AESMode.cbc, padding: 'PKCS7'),
+          );
+          final clearBytes = aes.decryptBytes(
+            enc.Encrypted(base64Decode(ct)),
+            iv: enc.IV(base64Decode(iv)),
+          );
+          clear = jsonDecode(utf8.decode(clearBytes)) as Map<String, dynamic>;
+        }
+
+        results.add({
+          'clear': clear,
+          'cacheKey': '$noteId:$salt',
+          'originalKey': originalKey,
+        });
+
+        // Wipe derived key
+        for (var i = 0; i < recordKey.length; i++) {
+          recordKey[i] = 0;
+        }
+      } catch (_) {
+        results.add(null);
+      }
+    }
+    return results;
+  }
+
+  static Map<String, dynamic> _deepConvertInIsolate(Map raw) {
+    return raw.map((k, v) {
+      final key = k.toString();
+      if (v is Map) return MapEntry(key, _deepConvertInIsolate(v));
+      if (v is List) return MapEntry(key, _deepConvertListInIsolate(v));
+      return MapEntry(key, v);
+    });
+  }
+
+  static List<dynamic> _deepConvertListInIsolate(List raw) {
+    return raw.map((v) {
+      if (v is Map) return _deepConvertInIsolate(v);
+      if (v is List) return _deepConvertListInIsolate(v);
+      return v;
+    }).toList();
   }
 
   static Uint8List _deriveRecordKeySync(
@@ -449,6 +554,12 @@ class _BatchInput {
   final Uint8List masterKey;
   final List<BatchItem> items;
   _BatchInput({required this.masterKey, required this.items});
+}
+
+class _BatchOptimizedInput {
+  final Uint8List masterKey;
+  final List<Map<String, dynamic>> entries;
+  _BatchOptimizedInput({required this.masterKey, required this.entries});
 }
 
 
