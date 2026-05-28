@@ -85,7 +85,7 @@ class _SmartCompressionSheetState extends State<SmartCompressionSheet> {
     setState(() => _compressing = true);
 
     if (_mode == CompressionMode.smart) {
-      // Just a placeholder to ensure we didn't break other things, we'll run compression for all modes now
+      // Smart mode uses analysis-driven defaults in _getImageOptions / _getVideoOptions
     }
 
     _progress = 0;

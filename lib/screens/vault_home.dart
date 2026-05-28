@@ -87,7 +87,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     widget.auth.isHiddenVaultConfigured().then((v) {
       if (mounted) setState(() => _hasHiddenVault = v);
-    });
+    }).catchError((Object e) { debugPrint('Failed to check hidden vault: $e'); });
     if (widget.authResult.kind != VaultKind.decoy) {
       _repo = VaultRepository(
         widget.authResult.masterKey!,
@@ -141,7 +141,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
           );
         });
       }
-    });
+    }).catchError((Object e) { debugPrint('Failed to get device posture: $e'); });
   }
 
   @override
@@ -260,8 +260,7 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
           _noteCategories[note.id] = entry.key.name;
         }
       }
-      // Trigger a silent rebuild if needed, but categories are usually just for filters
-    });
+    }).catchError((Object e) { debugPrint('Failed to compute categories: $e'); });
   }
 
   void _buildSearchSuggestionsAsync(List<SecureNote> notes) {
@@ -269,14 +268,14 @@ class _VaultHomeState extends State<VaultHome> with WidgetsBindingObserver {
     _searchService.getSuggestionsAsync(notes).then((suggestions) {
       if (!mounted) return;
       setState(() => _searchSuggestions = suggestions);
-    });
+    }).catchError((Object e) { debugPrint('Failed to build suggestions: $e'); });
   }
 
   void _loadArchivedCountAsync() {
     _passwordVault!.archivedCount().then((c) {
       if (mounted) setState(() => _archivedCount += c);
       StartupDiagnostics.instance.markPasswordsLoaded();
-    });
+    }).catchError((Object e) { debugPrint('Failed to load archived count: $e'); });
   }
 
   void _computeCategories() {

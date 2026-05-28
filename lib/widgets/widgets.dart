@@ -1,3 +1,4 @@
+export 'search_highlight_controller.dart' show SearchHighlightController;
 export 'search_filters.dart' show FilterChipType, SearchFiltersBar;
 export 'smart_category_badge.dart' show SmartCategoryBadge;
 export 'smart_search_bar.dart' show SmartSearchBar;

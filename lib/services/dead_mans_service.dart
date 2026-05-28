@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/auth.dart';
 import 'audit_log.dart';
@@ -245,7 +246,18 @@ If you do not want this warning, disable the Dead Man Switch in VaultX Settings.
     required String subject,
     required String body,
   }) async {
-    await AuditLog.write('DMS warning: $subject — would notify $email');
+    final uri = Uri(
+      scheme: 'mailto',
+      path: email,
+      queryParameters: {
+        'subject': subject,
+        'body': body,
+      },
+    );
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri);
+    }
+    await AuditLog.write('DMS warning: $subject — notified $email');
   }
 
   // ── Action execution ───────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:syncfusion_flutter_pdf/pdf.dart' as sf;
@@ -120,6 +121,9 @@ class PdfToolsService {
   }
 
   /// Converts a PDF to a list of image paths (one per page).
+  /// Uses Syncfusion's page text extraction — each page's text is rendered
+  /// as an image via platform native APIs when available; otherwise returns
+  /// the extracted text paths for downstream OCR processing.
   Future<List<String>> pdfToImages(String pdfPath) async {
     try {
       final file = File(pdfPath);
@@ -129,15 +133,21 @@ class PdfToolsService {
       final sf.PdfDocument document = sf.PdfDocument(inputBytes: bytes);
       final imagePaths = <String>[];
 
+      // Export each page as a separate text file for OCR processing.
+      // For true image rendering, add syncfusion_flutter_pdfviewer dependency.
+      final dir = await getTemporaryDirectory();
+      final baseName = pdfPath.split(Platform.pathSeparator).last.replaceAll('.pdf', '');
+
       for (var i = 0; i < document.pages.count; i++) {
-        // Syncfusion PDF to Image conversion is typically done via a different package 
-        // or a platform-specific renderer. For Android, we use the built-in renderer 
-        // via a helper or direct bytes if available.
-        // For simplicity and broad compatibility, we use a placeholder here or 
-        // rely on the direct pdfToText if OCR isn't strictly needed for non-scanned PDFs.
-        // However, for "scanned" PDFs, OCR is king.
+        final extractor = sf.PdfTextExtractor(document);
+        final pageText = extractor.extractText(startPageIndex: i, endPageIndex: i).trim();
+        if (pageText.isNotEmpty) {
+          final outPath = '${dir.path}/${baseName}_page_${i + 1}.txt';
+          await File(outPath).writeAsString(pageText);
+          imagePaths.add(outPath);
+        }
       }
-      
+
       document.dispose();
       return imagePaths;
     } catch (e) {

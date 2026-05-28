@@ -4,7 +4,9 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'auth_service.dart';
+import 'cloud_storage_provider.dart';
 import 'google_drive_backup.dart';
+import 'mega_backup_service.dart';
 import 'temp_file_manager.dart';
 
 /// Orchestrates the irreversible "Delete Everything" process.
@@ -29,15 +31,23 @@ class SecureDeleteService {
 
       // 2. Cloud/Drive Cleanup
       onProgress('Cleaning up cloud backups...');
-      final gdriveService = GoogleDriveBackupService(
+
+      Future<void> _wipeProvider(CloudStorageProvider provider) async {
+        final signedIn = await provider.signInSilently();
+        if (signedIn) {
+          await provider.deleteAllBackups();
+          await provider.signOut();
+        }
+      }
+
+      await _wipeProvider(GoogleDriveBackupService(
         authService: authService,
         masterKey: verified.masterKey,
-      );
-      final signedIn = await gdriveService.signInSilently();
-      if (signedIn) {
-        await gdriveService.deleteAllBackups();
-        await gdriveService.signOut();
-      }
+      ));
+      await _wipeProvider(MEGABackupService(
+        authService: authService,
+        masterKey: verified.masterKey,
+      ));
 
       // 3. Local Data Wipe - Directories & Files
       onProgress('Deleting secure media and files...');

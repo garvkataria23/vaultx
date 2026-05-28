@@ -1453,7 +1453,6 @@ class _VoiceRecordDialogState extends State<_VoiceRecordDialog>
   int _seconds = 0;
   
   StreamSubscription<record.Amplitude>? _ampSub;
-  double _currentAmplitude = -160.0;
   bool _voiceDetected = false;
 
   @override
@@ -1508,10 +1507,9 @@ class _VoiceRecordDialogState extends State<_VoiceRecordDialog>
     if (mounted) {
       _ampSub = _recorder.onAmplitudeChanged(const Duration(milliseconds: 100)).listen((amp) {
         if (mounted) {
-          setState(() {
-            _currentAmplitude = amp.current;
-            if (amp.current > -40.0) _voiceDetected = true;
-          });
+          if (amp.current > -40.0) {
+            setState(() => _voiceDetected = true);
+          }
         }
       });
     }

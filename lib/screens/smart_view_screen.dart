@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/services.dart';
 import '../widgets/note_views_renderer.dart';
+import '../widgets/widgets.dart';
 
 enum SmartCategory {
   recent('Recent Notes', Icons.history, 'Recently updated or viewed'),
@@ -286,11 +287,48 @@ class _SmartViewScreenState extends State<SmartViewScreen> {
                         categories: const {},
                         hasMore: false,
                         onLoadMore: () {},
-                        onDelete: (n) {},
-                        onToggleArchive: (n) {},
-                        onToggleLock: (n) {},
-                        onShare: (n) {},
-                        onMove: (n) {},
+                        onDelete: (n) async {
+                          if (widget.repo == null) return;
+                          await widget.repo!.save(n.copyWith(
+                            deleted: true,
+                            deletedAt: DateTime.now(),
+                          ));
+                          _selectCategory(_selectedCategory!);
+                        },
+                        onToggleArchive: (n) async {
+                          if (widget.repo == null) return;
+                          await widget.repo!.save(n.copyWith(archived: !n.archived));
+                          _selectCategory(_selectedCategory!);
+                        },
+                        onToggleLock: (n) async {
+                          if (widget.repo == null) return;
+                          await widget.repo!.save(n.copyWith(locked: !n.locked));
+                          _selectCategory(_selectedCategory!);
+                        },
+                        onShare: (n) async {
+                          await ShareService.shareNote(n);
+                        },
+                        onMove: (n) async {
+                          if (widget.repo == null) return;
+                          final folders = await widget.repo!.loadFolderMetadata();
+                          final folderNames = folders.map((f) => f.name).toList();
+                          if (!folderNames.contains('Private')) folderNames.add('Private');
+                          if (!folderNames.contains('Work')) folderNames.add('Work');
+                          if (!folderNames.contains('Personal')) folderNames.add('Personal');
+                          if (!context.mounted) return;
+                          final newFolder = await showDialog<String>(
+                            context: context,
+                            builder: (ctx) => MoveDialog(
+                              currentFolder: n.folder,
+                              folders: folderNames,
+                              title: 'Move Note',
+                            ),
+                          );
+                          if (newFolder != null && newFolder != n.folder && widget.repo != null) {
+                            await widget.repo!.save(n.copyWith(folder: newFolder));
+                            _selectCategory(_selectedCategory!);
+                          }
+                        },
                         padding: EdgeInsets.fromLTRB(
                           16,
                           16,

@@ -196,7 +196,7 @@ class NoteEditor extends StatefulWidget {
 class _NoteEditorState extends State<NoteEditor> {
   late SecureNote _note;
   late TextEditingController _title;
-  late TextEditingController _body;
+  late SearchHighlightController _body;
   late TextEditingController _folder;
   late TextEditingController _tags;
   late List<TodoTask> _todoList;
@@ -235,9 +235,7 @@ class _NoteEditorState extends State<NoteEditor> {
 
   bool _transcribing = false;
 
-  // Voice recording amplitude monitoring
   StreamSubscription? _ampSub;
-  double _currentAmplitude = -160.0;
   bool _voiceDetected = false;
 
   // Auto-save state
@@ -247,6 +245,11 @@ class _NoteEditorState extends State<NoteEditor> {
   DateTime? _lastSaved;
   bool _hasUnsavedChanges = false;
   bool _isPreviewMode = false;
+
+  bool _showSearchBar = false;
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocus = FocusNode();
+  int _currentMatchIndex = 0;
 
   final _uuid = const Uuid();
 
@@ -262,7 +265,7 @@ class _NoteEditorState extends State<NoteEditor> {
       updatedAt: DateTime.now(),
     );
     _title = TextEditingController(text: _note.title);
-    _body = TextEditingController(text: _note.body);
+    _body = SearchHighlightController()..text = _note.body;
     _folder = TextEditingController(text: _note.folder);
     _tags = TextEditingController(text: _note.tags.join(', '));
     _todoList = List<TodoTask>.from(_note.todoList);
@@ -397,6 +400,8 @@ class _NoteEditorState extends State<NoteEditor> {
     _tags.dispose();
     _bodyFocus.dispose();
     _ocrText.dispose();
+    _searchController.dispose();
+    _searchFocus.dispose();
     _queueService.cancelAll();
     _queueService.removeNoteJobs(_note.id);
     _ampSub?.cancel();
@@ -595,6 +600,100 @@ class _NoteEditorState extends State<NoteEditor> {
     );
   }
 
+  void _toggleSearchBar() {
+    setState(() {
+      _showSearchBar = !_showSearchBar;
+      if (!_showSearchBar) {
+        _searchController.clear();
+        _body.searchQuery = '';
+        _body.updateMatches();
+      } else {
+        _searchFocus.requestFocus();
+      }
+    });
+  }
+
+  Widget _buildSearchBar() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: Row(
+        children: [
+          const Icon(Icons.search, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: TextField(
+              controller: _searchController,
+              focusNode: _searchFocus,
+              decoration: const InputDecoration(
+                hintText: 'Search in note...',
+                border: InputBorder.none,
+                isDense: true,
+                contentPadding: EdgeInsets.symmetric(vertical: 8),
+              ),
+              onChanged: _onSearchChanged,
+            ),
+          ),
+          if (_body.matches.isNotEmpty) ...[
+            Text('${_currentMatchIndex + 1}/${_body.matches.length}'),
+            const SizedBox(width: 4),
+            IconButton(
+              icon: const Icon(Icons.arrow_upward, size: 18),
+              onPressed: _previousMatch,
+              visualDensity: VisualDensity.compact,
+            ),
+            IconButton(
+              icon: const Icon(Icons.arrow_downward, size: 18),
+              onPressed: _nextMatch,
+              visualDensity: VisualDensity.compact,
+            ),
+          ],
+          IconButton(
+            icon: const Icon(Icons.close, size: 18),
+            onPressed: _toggleSearchBar,
+            visualDensity: VisualDensity.compact,
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _onSearchChanged(String query) {
+    _body.searchQuery = query;
+    _body.updateMatches();
+    setState(() {
+      _currentMatchIndex = _body.matches.isEmpty ? 0 : 0;
+    });
+  }
+
+  void _nextMatch() {
+    if (_body.matches.isEmpty) return;
+    setState(() {
+      _currentMatchIndex = (_currentMatchIndex + 1) % _body.matches.length;
+    });
+    _jumpToMatch();
+  }
+
+  void _previousMatch() {
+    if (_body.matches.isEmpty) return;
+    setState(() {
+      _currentMatchIndex = (_currentMatchIndex - 1 + _body.matches.length) % _body.matches.length;
+    });
+    _jumpToMatch();
+  }
+
+  void _jumpToMatch() {
+    if (_currentMatchIndex < 0 || _currentMatchIndex >= _body.matches.length) return;
+    final match = _body.matches[_currentMatchIndex];
+    _body.setActiveMatch(_currentMatchIndex);
+    _body.selection = TextSelection.collapsed(offset: match.start);
+    _bodyFocus.requestFocus();
+  }
+
   Future<void> _addAttachment() async {
     final attachment = await widget.blobs?.pickAndEncryptFile(_note.id);
     if (attachment == null) return;
@@ -766,15 +865,13 @@ class _NoteEditorState extends State<NoteEditor> {
       setState(() {
         _recording = true;
         _voiceDetected = false;
-        _currentAmplitude = -160.0;
       });
 
       _ampSub = r.onAmplitudeChanged(const Duration(milliseconds: 100)).listen((amp) {
         if (mounted) {
-          setState(() {
-            _currentAmplitude = amp.current;
-            if (amp.current > -40.0) _voiceDetected = true;
-          });
+          if (amp.current > -40.0) {
+            setState(() => _voiceDetected = true);
+          }
         }
       });
     }
@@ -1311,6 +1408,11 @@ class _NoteEditorState extends State<NoteEditor> {
             tooltip: _isPreviewMode ? 'Edit Mode' : 'Reading Mode',
           ),
           IconButton(
+            onPressed: _toggleSearchBar,
+            icon: Icon(_showSearchBar ? Icons.search_off : Icons.search),
+            tooltip: _showSearchBar ? 'Close search' : 'Search in note',
+          ),
+          IconButton(
             onPressed: () => ClipboardGuard.copySensitive(_body.text),
             icon: const Icon(Icons.copy),
             tooltip: 'Copy and auto-clear',
@@ -1342,6 +1444,7 @@ class _NoteEditorState extends State<NoteEditor> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
         children: [
+          if (_showSearchBar) _buildSearchBar(),
           if (_sensitiveDetected)
             Card(
               color: Theme.of(
